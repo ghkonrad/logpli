@@ -36,23 +36,23 @@ import collections
 import matplotlib.pyplot as plt
 
 
-parser = argparse.ArgumentParser(description='Wygładzanie algorytmem opartym o LZNK.');
-parser.add_argument('plik', type=str, help='Plik z danymi')
-parser.add_argument('N', type=int, nargs='?', default=0, help='Numer kolumny, liczony od zera')
-parser.add_argument('--delimiter', type=str, default='\t', help='Znak służący do oddzielania kolumn w pliku wejściowym CSV')
-parser.add_argument('--title', type=str, default="", help='Ustawienie określonego tytułu w obrazkach')
-parser.add_argument('--savecsv', type=str, default=None, help='Zapisanie danych do podanego pliku')
-parser.add_argument('--n0', type=int, default=1, help='Początkowy zakres uśredniania')
-parser.add_argument('--n1', type=int, default=100, help='Końcowy zakres uśredniania')
-parser.add_argument('--iters', type=int, default=1, help='Pozwala wykonać kilka iteracji')
-parser.add_argument('--Jodj', type=float, default=None, help='Stała odejmowana od J eksperymentalnego')
-parser.add_argument('--tmin', type=float, default=-numpy.inf, help='Minimalne t')
-parser.add_argument('--tmax', type=float, default=numpy.inf, help='Maksymalne t')
-parser.add_argument('--tpoint', type=float, default=None, help='Orientacyjny punkt na wykresach podany względem czasu')
-parser.add_argument('--st', type=int, default=1, help='Stopień wielomianu w LZNK')
-parser.add_argument('--nielinznk', action='store_true', default=False, help='Stosuj nieliniowe zadanie najmniejszych kwadratów (domyślnie: LZNK)')
-parser.add_argument('--gaussian', action='store_true', default=False, help='Stosuj filtrowanie Gaussa na danych wejściowych (domyślnie: nie)')
-parser.add_argument('--najpierwusredn', action='store_true', default=False, help='Uśrednij przed odjęciem Jodj (domyślnie: uśredniamy po odjęciu)')
+parser = argparse.ArgumentParser(description='(Linear-)least-squares-based fitting algorithm.');
+parser.add_argument('sourcefile', type=str, help='CSV data file')
+parser.add_argument('N', type=int, nargs='?', default=0, help='Column number, indexed from 0')
+parser.add_argument('--delimiter', type=str, default='\t', help='CSV column delimiter')
+parser.add_argument('--title', type=str, default="", help='Title of produced figures')
+parser.add_argument('--savecsv', type=str, default=None, help='Save results to this file')
+parser.add_argument('--n0', type=int, default=1, help='Initial averaging interval')
+parser.add_argument('--n1', type=int, default=100, help='Final averaging interval')
+parser.add_argument('--iters', type=int, default=1, help='Multiple iterations of the averaging')
+parser.add_argument('--Jodj', type=float, default=None, help='Constant subtracted from the experimental J data')
+parser.add_argument('--tmin', type=float, default=-numpy.inf, help='Minimal t')
+parser.add_argument('--tmax', type=float, default=numpy.inf, help='Maximal t')
+parser.add_argument('--tpoint', type=float, default=None, help='Auxiliary indicatory point to be put on the figures')
+parser.add_argument('--st', type=int, default=1, help='Polynomial degree for least-squares fitting')
+parser.add_argument('--nielinznk', action='store_true', default=False, help='Use nonlinear least squares (default is to use linear)')
+parser.add_argument('--gaussian', action='store_true', default=False, help='Use Gaussian filtering (default: no)')
+parser.add_argument('--averageoutfirst', action='store_true', default=False, help='First average out J, then subtract Jodj (default is to subtract Jodj from J and then to average out)')
 args = parser.parse_args()
 
 
@@ -223,25 +223,28 @@ def zakres(i,n, N):
 
 def main():
 
-	columns = read_data_headers(args.plik, delimiter=args.delimiter)
+	columns = read_data_headers(args.sourcefile, delimiter=args.delimiter)
 
 	if(args.N == 0):
 
-		print("Podaj kolumnę do uśrednienia jako ostatni parametr.\nMożliwości:");
+		print("Specify the column to average out as a last parameter.\nList of columns:");
 		for col in sorted(columns.values(), key= lambda col: col.number):
 			print("%3d: %3s (%s)"%((col.number, col.name, col.label)));
 
+		if(len(columns)==1):
+			print("Only one column in this file? Perhaps --delimiter is not set correctly?".format(args=args));
+
 	else:
 		if(args.N not in columns):
-			print("Nie odnalazłem kolumny {args.N}. Może jest źle ustawiony parametr --delimiter?".format(args=args));
+			print("No column {args.N}. Perhaps --delimiter is not set correctly?".format(args=args));
 			sys.exit(2);
 
 		col=columns[args.N];
-		print("Opracujemy kolumnę %d: %s (%s)"%((col.number, col.name, col.label)));
+		print("Using column %d: %s (%s)"%((col.number, col.name, col.label)));
 
 		title = "%s --- %s (%s)"%((args.title, col.name, col.label));
 
-		[te, Je] = load_exp_data(args.plik, args.N, delimiter=args.delimiter);
+		[te, Je] = load_exp_data(args.sourcefile, args.N, delimiter=args.delimiter);
 
 		indices = numpy.where(numpy.logical_and(te >= args.tmin, te <= args.tmax));
 		te = te[indices];
@@ -255,7 +258,7 @@ def main():
 			nfit = args.n1;
 			(Jodjfit,c) = exp_plus_c_fit(te[-nfit:], Je[-nfit:], [0,0,0]);
 			Jodj = c[2];
-			print("Znalezione Jodj: %f"%Jodj);
+			print("Jodj found: %f"%Jodj);
 
 			plt.plot(te, Je, color = 'green', label="$J$ experimental");
 			plt.plot(te[-nfit:], Jodjfit, color='blue', label="$J$ fit");
@@ -273,7 +276,7 @@ def main():
 		for iter in range(args.iters):
 			if(iter==0):
 				tin = te;
-				if(args.najpierwusredn):
+				if(args.averageoutfirst):
 					Jin = Jo;
 				else:
 					Jin = Je;
@@ -284,7 +287,7 @@ def main():
 
 			(ts, Jts, dlnJts, _) = new_approx(tin, Jin, args.n0, args.n1, st=args.st, nielinznk=args.nielinznk, gaussian=args.gaussian);
 
-		if(args.najpierwusredn):
+		if(args.averageoutfirst):
 			Jts -= Jodj;
 
 		if(args.tpoint is not None):
