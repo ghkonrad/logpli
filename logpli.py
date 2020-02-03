@@ -106,6 +106,9 @@ def new_approx(te,Je,initr, endr, st, nielinznk=False, gaussian=False):
 	assert(initr>=1);
 	assert(initr<=endr);
 
+	if(endr >= len(Je)):
+		raise RuntimeError("Final averaging interval is larger than total data length");
+
 	if(gaussian):
 		n_gaussian = 5
 		Jg = scipy.ndimage.filters.gaussian_filter1d(Je, n_gaussian, mode='nearest');
