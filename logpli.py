@@ -53,8 +53,10 @@ parser.add_argument('--st', type=int, default=1, help='Polynomial degree for lea
 parser.add_argument('--nielinznk', action='store_true', default=False, help='Use nonlinear least squares (default is to use linear)')
 parser.add_argument('--gaussian', action='store_true', default=False, help='Use Gaussian filtering (default: no)')
 parser.add_argument('--averageoutfirst', action='store_true', default=False, help='First average out J, then subtract Jodj (default is to subtract Jodj from J and then to average out)')
+parser.add_argument('--noplots', action='store_true', default=False, help='Suppress plots')
 args = parser.parse_args()
 
+plots = not args.noplots;
 
 def deriv(v, t):
 	assert(len(v)>1);
@@ -86,7 +88,7 @@ def load_exp_data(plik, kol_J = 1, delimiter=' ', **kwords):
 
 def lznk_fit(x, fx, st):
 	A = numpy.vstack([x**i for i in range(st+1)]).T;
-	c = numpy.linalg.lstsq(A,fx)[0];
+	c = numpy.linalg.lstsq(A,fx,rcond=None)[0];
 	#print(c);
 	fit = sum(c[i] * x**i for i in range(st+1));
 	return (fit,c);
@@ -263,13 +265,14 @@ def main():
 			Jodj = c[2];
 			print("Jodj found: %f"%Jodj);
 
-			plt.plot(te, Je, color = 'green', label="$J$ experimental");
-			plt.plot(te[-nfit:], Jodjfit, color='blue', label="$J$ fit");
-			plt.yscale('log');
-			plt.legend(loc='best');
-			plt.xlabel("$t$");
-			plt.title(title);
-			plt.show();
+			if(plots):
+				plt.plot(te, Je, color = 'green', label="$J$ experimental");
+				plt.plot(te[-nfit:], Jodjfit, color='blue', label="$J$ fit");
+				plt.yscale('log');
+				plt.legend(loc='best');
+				plt.xlabel("$t$");
+				plt.title(title);
+				plt.show();
 
 		Je = numpy.abs(Je - Jodj);
 		dJe = deriv(Je, te);
@@ -296,55 +299,56 @@ def main():
 		if(args.tpoint is not None):
 			point = (numpy.abs(ts-args.tpoint)).argmin();
 
-		plt.plot(te, Je, color = 'green', label="$J$ experimental");
-		plt.plot(ts, Jts, color='red', label="$J$ denoised");
-		if(args.tpoint is not None):
-			plt.plot(ts[point], Jts[point], 'ro');
-		plt.yscale('log');
-		plt.legend(loc='best');
-		plt.xlabel("$t$");
-		plt.title(title);
-		plt.show();
+		if(plots):
+			plt.plot(te, Je, color = 'green', label="$J$ experimental");
+			plt.plot(ts, Jts, color='red', label="$J$ denoised");
+			if(args.tpoint is not None):
+				plt.plot(ts[point], Jts[point], 'ro');
+			plt.yscale('log');
+			plt.legend(loc='best');
+			plt.xlabel("$t$");
+			plt.title(title);
+			plt.show();
 
-		#dJe = deriv(Je, te);
-		#plt.plot(te, dJe, color='green', label=r"$\frac{d J}{d t}$ experimental");
-		#plt.plot(ts, dlnJts*Jts, color='red', label=r"$\frac{d J}{d t}$ denoised");
-		#if(args.tpoint is not None):
-		#	plt.plot(ts[point], dlnJts[point]*Jts[point], 'ro');
-		#plt.yscale('linear');
-		#plt.legend(loc='best');
-		#plt.xlabel("$t$");
-		#plt.title(title);
-		#plt.show();
-		
-		plt.plot(Je , -dlnJe , color='green', label=r"$-\frac{d \log(J)}{d t}$ experimental");
-		plt.plot(Jts, -dlnJts, color='red',   label=r"$-\frac{d \log(J)}{d t}$ denoised");
-		if(args.tpoint is not None):
-			plt.plot(Jts[point], -dlnJts[point], 'ro');
-		plt.yscale('linear');
-		plt.ylim(0.5*min(-dlnJts), 1.15*max(-dlnJts));
-		plt.legend(loc='best');
-		plt.xlabel("$J$");
-		plt.title(title);
-		plt.show();
-		
-		plt.plot(numpy.sqrt(Je),  -dlnJe , color='green', label=r"$-\frac{d \log(J)}{d t}$ experimental");
-		plt.plot(numpy.sqrt(Jts), -dlnJts, color='red',   label=r"$-\frac{d \log(J)}{d t}$ denoised");
-		if(args.tpoint is not None):
-			plt.plot(numpy.sqrt(Jts[point]), -dlnJts[point], 'ro');
-		plt.yscale('linear');
-		plt.ylim(0.5*min(-dlnJts), 1.15*max(-dlnJts));
-		plt.legend(loc='best');
-		plt.xlabel(r"$\sqrt{J}$");
-		plt.title(title);
-		plt.show();
+			#dJe = deriv(Je, te);
+			#plt.plot(te, dJe, color='green', label=r"$\frac{d J}{d t}$ experimental");
+			#plt.plot(ts, dlnJts*Jts, color='red', label=r"$\frac{d J}{d t}$ denoised");
+			#if(args.tpoint is not None):
+			#	plt.plot(ts[point], dlnJts[point]*Jts[point], 'ro');
+			#plt.yscale('linear');
+			#plt.legend(loc='best');
+			#plt.xlabel("$t$");
+			#plt.title(title);
+			#plt.show();
+
+			plt.plot(Je , -dlnJe , color='green', label=r"$-\frac{d \log(J)}{d t}$ experimental");
+			plt.plot(Jts, -dlnJts, color='red',   label=r"$-\frac{d \log(J)}{d t}$ denoised");
+			if(args.tpoint is not None):
+				plt.plot(Jts[point], -dlnJts[point], 'ro');
+			plt.yscale('linear');
+			plt.ylim(0.5*min(-dlnJts), 1.15*max(-dlnJts));
+			plt.legend(loc='best');
+			plt.xlabel("$J$");
+			plt.title(title);
+			plt.show();
+
+			plt.plot(numpy.sqrt(Je),  -dlnJe , color='green', label=r"$-\frac{d \log(J)}{d t}$ experimental");
+			plt.plot(numpy.sqrt(Jts), -dlnJts, color='red',   label=r"$-\frac{d \log(J)}{d t}$ denoised");
+			if(args.tpoint is not None):
+				plt.plot(numpy.sqrt(Jts[point]), -dlnJts[point], 'ro');
+			plt.yscale('linear');
+			plt.ylim(0.5*min(-dlnJts), 1.15*max(-dlnJts));
+			plt.legend(loc='best');
+			plt.xlabel(r"$\sqrt{J}$");
+			plt.title(title);
+			plt.show();
 
 
 		if(args.savecsv is not None):
 			numpy.savetxt(args.savecsv, numpy.column_stack((te, Jo, Je, -dlnJe, ts, Jts, -dlnJts)),
 				fmt='%15.7e',
-				delimiter='\t',
-				header='\t'.join(('%15s'%s for s in ('te', 'Jo', 'Je', '-dlnJe', 'ts', 'Jts', '-dlnJts'))),
+				delimiter=args.delimiter,
+				header=args.delimiter.join(('%15s'%s for s in ('te', 'Jo', 'Je', '-dlnJe', 'ts', 'Jts', '-dlnJts'))),
 				comments='',
 				);
 
