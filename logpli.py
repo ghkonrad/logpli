@@ -39,6 +39,7 @@ import matplotlib.pyplot as plt
 parser = argparse.ArgumentParser(description='(Linear-)least-squares-based fitting algorithm.');
 parser.add_argument('sourcefile', type=str, help='CSV data file')
 parser.add_argument('N', type=int, nargs='?', default=0, help='Column number, indexed from 0')
+parser.add_argument('--ct', type=int, default=0, help='Column number for time (default: 0)')
 parser.add_argument('--delimiter', type=str, default='\t', help='CSV column delimiter')
 parser.add_argument('--title', type=str, default="", help='Title of produced figures')
 parser.add_argument('--savecsv', type=str, default=None, help='Save results to this file')
@@ -78,10 +79,10 @@ def exp_plus_c_fit(x, fx, c0):
 	fit = fun(c,x,0);
 	return (fit,c);
 
-def load_exp_data(plik, kol_J = 1, delimiter=' ', **kwords):
+def load_exp_data(plik, kol_t=0, kol_J = 1, delimiter=' ', **kwords):
 	t_J = numpy.genfromtxt(plik, delimiter=delimiter, **kwords)
 
-	t = t_J[:,0];# * un.ns;
+	t = t_J[:,kol_t];# * un.ns;
 	J = t_J[:,kol_J];
 
 	return (t,J);
@@ -244,12 +245,15 @@ def main():
 			print("No column {args.N}. Perhaps --delimiter is not set correctly?".format(args=args));
 			sys.exit(2);
 
-		col=columns[args.N];
-		print("Using column %d: %s (%s)"%((col.number, col.name, col.label)));
+		colx = columns[args.ct];
+		col = columns[args.N];
+		print("Using columns:");
+		print("X: %d, %s (%s)"%((colx.number, colx.name, colx.label)));
+		print("Y: %d, %s (%s)"%((col.number, col.name, col.label)));
 
 		title = "%s --- %s (%s)"%((args.title, col.name, col.label));
 
-		[te, Je] = load_exp_data(args.sourcefile, args.N, delimiter=args.delimiter);
+		[te, Je] = load_exp_data(plik=args.sourcefile, kol_t=args.ct, kol_J=args.N, delimiter=args.delimiter, skip_header=1);
 
 		indices = numpy.where(numpy.logical_and(te >= args.tmin, te <= args.tmax));
 		te = te[indices];
