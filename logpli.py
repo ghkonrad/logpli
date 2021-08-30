@@ -55,6 +55,7 @@ parser.add_argument('--nielinznk', action='store_true', default=False, help='Use
 parser.add_argument('--gaussian', action='store_true', default=False, help='Use Gaussian filtering (default: no)')
 parser.add_argument('--averageoutfirst', action='store_true', default=False, help='First average out J, then subtract Jodj (default is to subtract Jodj from J and then to average out)')
 parser.add_argument('--noplots', action='store_true', default=False, help='Suppress plots')
+parser.add_argument('--ignorezeros', action='store_true', default=False, help='Ignore measurements which were equal to 0')
 args = parser.parse_args()
 
 plots = not args.noplots;
@@ -254,6 +255,12 @@ def main():
 		title = "%s --- %s (%s)"%((args.title, col.name, col.label));
 
 		[te, Je] = load_exp_data(plik=args.sourcefile, kol_t=args.ct, kol_J=args.N, delimiter=args.delimiter, skip_header=1);
+
+		if(args.ignorezeros):
+			# remove zeros
+			nonzero_idcs = Je.nonzero();
+			te = te[nonzero_idcs];
+			Je = Je[nonzero_idcs];
 
 		indices = numpy.where(numpy.logical_and(te >= args.tmin, te <= args.tmax));
 		te = te[indices];
