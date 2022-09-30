@@ -36,30 +36,6 @@ import collections
 import matplotlib.pyplot as plt
 
 
-parser = argparse.ArgumentParser(description='(Linear-)least-squares-based fitting algorithm.');
-parser.add_argument('sourcefile', type=str, help='CSV data file')
-parser.add_argument('N', type=int, nargs='?', default=0, help='Column number, indexed from 0')
-parser.add_argument('--ct', type=int, default=0, help='Column number for time (default: 0)')
-parser.add_argument('--delimiter', type=str, default='\t', help='CSV column delimiter')
-parser.add_argument('--title', type=str, default="", help='Title of produced figures')
-parser.add_argument('--savecsv', type=str, default=None, help='Save results to this file')
-parser.add_argument('--n0', type=int, default=1, help='Initial averaging interval')
-parser.add_argument('--n1', type=int, default=100, help='Final averaging interval')
-parser.add_argument('--iters', type=int, default=1, help='Multiple iterations of the averaging')
-parser.add_argument('--Jodj', type=float, default=None, help='Constant subtracted from the experimental J data')
-parser.add_argument('--tmin', type=float, default=-numpy.inf, help='Minimal t')
-parser.add_argument('--tmax', type=float, default=numpy.inf, help='Maximal t')
-parser.add_argument('--tpoint', type=float, default=None, help='Auxiliary indicatory point to be put on the figures')
-parser.add_argument('--st', type=int, default=1, help='Polynomial degree for least-squares fitting')
-parser.add_argument('--nielinznk', action='store_true', default=False, help='Use nonlinear least squares (default is to use linear)')
-parser.add_argument('--gaussian', action='store_true', default=False, help='Use Gaussian filtering (default: no)')
-parser.add_argument('--averageoutfirst', action='store_true', default=False, help='First average out J, then subtract Jodj (default is to subtract Jodj from J and then to average out)')
-parser.add_argument('--noplots', action='store_true', default=False, help='Suppress plots')
-parser.add_argument('--ignorezeros', action='store_true', default=False, help='Ignore measurements which were equal to 0')
-args = parser.parse_args()
-
-plots = not args.noplots;
-
 def deriv(v, t):
 	assert(len(v)>1);
 	assert(len(v) == len(t));
@@ -228,7 +204,182 @@ def zakres(i,n, N):
 	return (zakr, poz);
 
 
+def smoothing(
+	te, Je,
+	st,
+	n0=1,
+	n1=100,
+	iters=1,
+	Jodj=None,
+	nielinznk=False,
+	gaussian=False,
+	averageoutfirst=False,
+	verbose=False,
+	plots=False,
+	title = "",
+	tpoint=None,
+	):
+	"""
+		Smoothing of noisy numerical data.
+
+		Parameters:
+
+		* *te* --- a vector of (increasing) experimental time steps
+		* *Je* --- a vector of corresponding experimental luminescence intensity
+		* *st* --- polynomial degree for least-squares fitting
+		* *n0* --- initial averaging interval
+		* *n1* --- final averaging interval
+		* *iters* --- multiple iterations of the averaging
+		* *Jodj* --- constant subtracted from the experimental J data (default: *None*, find automatically)
+		* *nielinznk* --- use nonlinear least squares (default is to use linear)
+		* *gaussian* --- use Gaussian filtering (default: no)
+		* *averageoutfirst* --- first average out J, then subtract Jodj (default is to subtract Jodj from J and then to average out)
+		* *verbose* --- show text
+		* *plots* --- show plots
+		* *title* --- title of produced figures
+		* *tpoint* --- auxiliary indicatory point to be put on the figures (default: *None*, no point)
+
+		* *ts*  --- a vector of time steps for smoothed luminescence intensity
+		* *Jts* --- a vector of smoothed luminescence intensity
+		* *mdlnJts*  --- a vector of negative logarithmic derivative of luminescence intensity
+		* *te* --- a vector of experimental time steps
+		* *Je* --- a vector of corresponding experimental luminescence intensity with *Jodj* subtracted
+		* *Je* --- a vector of corresponding original experimental luminescence intensity
+		* *mdlnJe*  --- a vector of negative logarithmic derivative of luminescence intensity, computed directly from the experimental data
+
+
+	"""
+
+	SmoothingReturn = collections.namedtuple("SmoothingReturn", ["ts", "Jts", "mdlnJts", "te", "Je", "mdlnJe", "Jo"])
+
+	# we will work on copies
+	te = numpy.copy(te);
+	Je = numpy.copy(Je);
+
+	# original data, stored separately
+	Jo = numpy.copy(Je);
+
+	if(Jodj is None):
+		nfit = n1;
+		(Jodjfit,c) = exp_plus_c_fit(te[-nfit:], Je[-nfit:], [0,0,0]);
+		Jodj = c[2];
+		if(verbose):
+			print("Jodj found: %f"%Jodj);
+
+		if(plots):
+			plt.plot(te, Je, color = 'green', label="$J$ experimental");
+			plt.plot(te[-nfit:], Jodjfit, color='blue', label="$J$ fit");
+			plt.yscale('log');
+			plt.legend(loc='best');
+			plt.xlabel("$t$");
+			plt.title(title);
+			plt.show();
+
+	Je = numpy.abs(Je - Jodj);
+	dJe = deriv(Je, te);
+	dlnJe = dJe/Je;
+
+
+	for iter in range(iters):
+		if(iter==0):
+			tin = te;
+			if(averageoutfirst):
+				Jin = Jo;
+			else:
+				Jin = Je;
+		else:
+			tin = ts;
+			Jin = Jts;
+
+
+		(ts, Jts, dlnJts, _) = new_approx(tin, Jin, n0, n1, st=st, nielinznk=nielinznk, gaussian=gaussian);
+
+	if(averageoutfirst):
+		Jts -= Jodj;
+
+	if(tpoint is not None):
+		point = (numpy.abs(ts-tpoint)).argmin();
+
+	if(plots):
+		plt.plot(te, Je, color = 'green', label="$J$ experimental");
+		plt.plot(ts, Jts, color='red', label="$J$ denoised");
+		if(tpoint is not None):
+			plt.plot(ts[point], Jts[point], 'ro');
+		plt.yscale('log');
+		plt.legend(loc='best');
+		plt.xlabel("$t$");
+		plt.title(title);
+		plt.show();
+
+		#dJe = deriv(Je, te);
+		#plt.plot(te, dJe, color='green', label=r"$\frac{d J}{d t}$ experimental");
+		#plt.plot(ts, dlnJts*Jts, color='red', label=r"$\frac{d J}{d t}$ denoised");
+		#if(tpoint is not None):
+		#	plt.plot(ts[point], dlnJts[point]*Jts[point], 'ro');
+		#plt.yscale('linear');
+		#plt.legend(loc='best');
+		#plt.xlabel("$t$");
+		#plt.title(title);
+		#plt.show();
+
+		plt.plot(Je , -dlnJe , color='green', label=r"$-\frac{d \log(J)}{d t}$ experimental");
+		plt.plot(Jts, -dlnJts, color='red',   label=r"$-\frac{d \log(J)}{d t}$ denoised");
+		if(tpoint is not None):
+			plt.plot(Jts[point], -dlnJts[point], 'ro');
+		plt.yscale('linear');
+		plt.ylim(0.5*min(-dlnJts), 1.15*max(-dlnJts));
+		plt.legend(loc='best');
+		plt.xlabel("$J$");
+		plt.title(title);
+		plt.show();
+
+		plt.plot(numpy.sqrt(Je),  -dlnJe , color='green', label=r"$-\frac{d \log(J)}{d t}$ experimental");
+		plt.plot(numpy.sqrt(Jts), -dlnJts, color='red',   label=r"$-\frac{d \log(J)}{d t}$ denoised");
+		if(tpoint is not None):
+			plt.plot(numpy.sqrt(Jts[point]), -dlnJts[point], 'ro');
+		plt.yscale('linear');
+		plt.ylim(0.5*min(-dlnJts), 1.15*max(-dlnJts));
+		plt.legend(loc='best');
+		plt.xlabel(r"$\sqrt{J}$");
+		plt.title(title);
+		plt.show();
+
+	return SmoothingReturn(
+		ts = ts,
+		Jts = Jts,
+		mdlnJts = -dlnJts,
+		te = te,
+		Je = Je,
+		mdlnJe = -dlnJe,
+		Jo = Jo,
+		);
+
+
 def main():
+
+	parser = argparse.ArgumentParser(description='(Linear-)least-squares-based fitting algorithm.');
+	parser.add_argument('sourcefile', type=str, help='CSV data file')
+	parser.add_argument('N', type=int, nargs='?', default=0, help='Column number, indexed from 0')
+	parser.add_argument('--ct', type=int, default=0, help='Column number for time (default: 0)')
+	parser.add_argument('--delimiter', type=str, default='\t', help='CSV column delimiter')
+	parser.add_argument('--title', type=str, default="", help='Title of produced figures')
+	parser.add_argument('--savecsv', type=str, default=None, help='Save results to this file')
+	parser.add_argument('--n0', type=int, default=1, help='Initial averaging interval')
+	parser.add_argument('--n1', type=int, default=100, help='Final averaging interval')
+	parser.add_argument('--iters', type=int, default=1, help='Multiple iterations of the averaging')
+	parser.add_argument('--Jodj', type=float, default=None, help='Constant subtracted from the experimental J data')
+	parser.add_argument('--tmin', type=float, default=-numpy.inf, help='Minimal t')
+	parser.add_argument('--tmax', type=float, default=numpy.inf, help='Maximal t')
+	parser.add_argument('--tpoint', type=float, default=None, help='Auxiliary indicatory point to be put on the figures')
+	parser.add_argument('--st', type=int, default=1, help='Polynomial degree for least-squares fitting')
+	parser.add_argument('--nielinznk', action='store_true', default=False, help='Use nonlinear least squares (default is to use linear)')
+	parser.add_argument('--gaussian', action='store_true', default=False, help='Use Gaussian filtering (default: no)')
+	parser.add_argument('--averageoutfirst', action='store_true', default=False, help='First average out J, then subtract Jodj (default is to subtract Jodj from J and then to average out)')
+	parser.add_argument('--noplots', action='store_true', default=False, help='Suppress plots')
+	parser.add_argument('--ignorezeros', action='store_true', default=False, help='Ignore measurements which were equal to 0')
+	args = parser.parse_args()
+
+	plots = not args.noplots;
 
 	columns = read_data_headers(args.sourcefile, delimiter=args.delimiter)
 
@@ -262,107 +413,36 @@ def main():
 			te = te[nonzero_idcs];
 			Je = Je[nonzero_idcs];
 
+
 		indices = numpy.where(numpy.logical_and(te >= args.tmin, te <= args.tmax));
 		te = te[indices];
 		Je = Je[indices];
 
-		Jo = numpy.copy(Je);
-
-		if(args.Jodj is not None):
-			Jodj = args.Jodj;
-		else:
-			nfit = args.n1;
-			(Jodjfit,c) = exp_plus_c_fit(te[-nfit:], Je[-nfit:], [0,0,0]);
-			Jodj = c[2];
-			print("Jodj found: %f"%Jodj);
-
-			if(plots):
-				plt.plot(te, Je, color = 'green', label="$J$ experimental");
-				plt.plot(te[-nfit:], Jodjfit, color='blue', label="$J$ fit");
-				plt.yscale('log');
-				plt.legend(loc='best');
-				plt.xlabel("$t$");
-				plt.title(title);
-				plt.show();
-
-		Je = numpy.abs(Je - Jodj);
-		dJe = deriv(Je, te);
-		dlnJe = dJe/Je;
 
 
-		for iter in range(args.iters):
-			if(iter==0):
-				tin = te;
-				if(args.averageoutfirst):
-					Jin = Jo;
-				else:
-					Jin = Je;
-			else:
-				tin = ts;
-				Jin = Jts;
-
-
-			(ts, Jts, dlnJts, _) = new_approx(tin, Jin, args.n0, args.n1, st=args.st, nielinznk=args.nielinznk, gaussian=args.gaussian);
-
-		if(args.averageoutfirst):
-			Jts -= Jodj;
-
-		if(args.tpoint is not None):
-			point = (numpy.abs(ts-args.tpoint)).argmin();
-
-		if(plots):
-			plt.plot(te, Je, color = 'green', label="$J$ experimental");
-			plt.plot(ts, Jts, color='red', label="$J$ denoised");
-			if(args.tpoint is not None):
-				plt.plot(ts[point], Jts[point], 'ro');
-			plt.yscale('log');
-			plt.legend(loc='best');
-			plt.xlabel("$t$");
-			plt.title(title);
-			plt.show();
-
-			#dJe = deriv(Je, te);
-			#plt.plot(te, dJe, color='green', label=r"$\frac{d J}{d t}$ experimental");
-			#plt.plot(ts, dlnJts*Jts, color='red', label=r"$\frac{d J}{d t}$ denoised");
-			#if(args.tpoint is not None):
-			#	plt.plot(ts[point], dlnJts[point]*Jts[point], 'ro');
-			#plt.yscale('linear');
-			#plt.legend(loc='best');
-			#plt.xlabel("$t$");
-			#plt.title(title);
-			#plt.show();
-
-			plt.plot(Je , -dlnJe , color='green', label=r"$-\frac{d \log(J)}{d t}$ experimental");
-			plt.plot(Jts, -dlnJts, color='red',   label=r"$-\frac{d \log(J)}{d t}$ denoised");
-			if(args.tpoint is not None):
-				plt.plot(Jts[point], -dlnJts[point], 'ro');
-			plt.yscale('linear');
-			plt.ylim(0.5*min(-dlnJts), 1.15*max(-dlnJts));
-			plt.legend(loc='best');
-			plt.xlabel("$J$");
-			plt.title(title);
-			plt.show();
-
-			plt.plot(numpy.sqrt(Je),  -dlnJe , color='green', label=r"$-\frac{d \log(J)}{d t}$ experimental");
-			plt.plot(numpy.sqrt(Jts), -dlnJts, color='red',   label=r"$-\frac{d \log(J)}{d t}$ denoised");
-			if(args.tpoint is not None):
-				plt.plot(numpy.sqrt(Jts[point]), -dlnJts[point], 'ro');
-			plt.yscale('linear');
-			plt.ylim(0.5*min(-dlnJts), 1.15*max(-dlnJts));
-			plt.legend(loc='best');
-			plt.xlabel(r"$\sqrt{J}$");
-			plt.title(title);
-			plt.show();
-
+		ret = smoothing(
+			te, Je,
+			st = args.st,
+			n0 = args.n0,
+			n1 = args.n1,
+			iters = args.iters,
+			Jodj = args.Jodj,
+			nielinznk = args.nielinznk,
+			gaussian = args.gaussian,
+			averageoutfirst = args.averageoutfirst,
+			verbose = True,
+			plots = plots,
+			title = title,
+			tpoint = args.tpoint,
+			);
 
 		if(args.savecsv is not None):
-			numpy.savetxt(args.savecsv, numpy.column_stack((te, Jo, Je, -dlnJe, ts, Jts, -dlnJts)),
+			numpy.savetxt(args.savecsv, numpy.column_stack((ret.te, ret.Jo, ret.Je, ret.mdlnJe, ret.ts, ret.Jts, ret.mdlnJts)),
 				fmt='%15.7e',
 				delimiter=args.delimiter,
 				header=args.delimiter.join(('%15s'%s for s in ('te', 'Jo', 'Je', '-dlnJe', 'ts', 'Jts', '-dlnJts'))),
 				comments='',
 				);
 
-
-
-main();
+if __name__ == "__main__":
+	main();
