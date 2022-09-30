@@ -16,13 +16,18 @@
 #   limitations under the License.
 #############################################################################
 #
-import sys
 
 import argparse
+import collections
+import csv
+from functools import cached_property
+from IPython.display import clear_output, display, HTML, Markdown, Latex
+import matplotlib.pyplot as plt
 
-import math
 import numpy
 import numpy.linalg
+
+import pint
 
 import scipy.sparse
 import scipy.sparse.linalg
@@ -30,21 +35,168 @@ import scipy.interpolate
 import scipy.optimize 
 import scipy.ndimage
 
-import csv
-import collections
-
-import matplotlib.pyplot as plt
+import sys
 
 
-def deriv(v, t):
-	assert(len(v)>1);
-	assert(len(v) == len(t));
-	dv = [(v[1] - v[0])/(t[1]-t[0])];
-	for i in range(1,len(v)-1):
-		dv.append( (v[i+1] - v[i])/(t[i+1] - t[i]) );
-		#dv.append( (v[i+1] - v[i-1])/(t[i+1] - t[i-1]) );
-	dv.append((v[-1] - v[-2])/(t[-1]-t[-2]));
-	return numpy.array(dv);
+un_default = pint.UnitRegistry(system='mks');
+
+class EstimateABC(object):
+	"""
+		Estimate ABC constants.
+		
+		Prameters:
+		* *fit_deg* --- degree of fitting polynomial, at least 2
+		* *un* --- a :class:`pint.UnitRegistry` instance
+	"""
+		#* *time_unit* --- time unit on plots and in the text file to/from *logpli*
+		#* *fit_deg* --- degree of fitting polynomial, at least 2
+		#* *fig_prefix* --- if not None, figures will be saved in this directory
+		#* *mkdir* --- if the *fig_prefix* directory shall be created if it does not exist
+	#def __init__(self, time_unit, fit_deg = 2, fig_prefix=None, mkdir=False, un = un_default):
+	def __init__(self, fit_deg = 2, un = un_default):
+		assert(fit_deg >= 2);
+
+		self.fit_deg = fit_deg;
+
+		self.un = un;
+		
+
+	def limit_args(self, x, y, x_min, x_max):
+		"""
+			Limit argument vector *x* and value vector *y* so that only arguments in [*x_min*, *x_max*] remain.
+
+			Return: (x,y) with arguments in [*x_min*, *x_max*].
+		"""
+		indices = numpy.where(numpy.logical_and(x >= x_min, x <= x_max));
+
+		return (x[indices], y[indices]);
+
+	@cached_property
+	def plot(self):
+		"""
+			Return a compatible :class:`Plotter` instance to perform plots.
+			Multiple uses results in the same instance being returned.
+		"""
+		return Plotter(un=self.un);
+
+	def remove_nonzero(self, x, y):
+		"""
+			Remove arguments and values for indices where the value is 0.
+
+			Parameters:
+
+			* *x* --- argument vector
+			* *y* --- value vector
+
+			Return: (*x*, *y*) with zero values removed
+		"""
+		assert x.shape == y.shape
+
+		nonzero_idcs = y.magnitude.nonzero();
+		return (x[nonzero_idcs], y[nonzero_idcs]);
+
+	def smooth(self, te, Je, Jodj=None, **smoothing_kwargs):
+		"""
+			Smooth experimental data.
+
+			Parameters:
+
+			* *te* --- time (with units)
+			* *Je* --- (noisy) data to be de-noised (with units)
+			* *Jodj* --- value to be subtracted from Je (with units)
+			* All optional parameters of :func:`smoothing` may be passed.
+
+			Return: a named tuple (*ts*, *Jts*, *mdlnJts*) 
+
+			* *ts*  --- a vector of time steps for smoothed luminescence intensity
+			* *Js* --- a vector of smoothed luminescence intensity
+			* *mdlnJs*  --- a vector of negative logarithmic derivative of luminescence intensity
+		"""
+
+		Return = collections.namedtuple("Return", ["ts", "Js", "mdlnJs"])
+		#plt.plot(te , Je, **self.style_data);
+		#plt.yscale("log");
+		#plt.xlabel(f"Time [${self.time_unit:~L}$]");
+		#plt.ylabel(f"Optical output [arb. u.]");
+		#self._save_fig("Je");
+		#plt.show();
+
+		if(Jodj != None):
+			Jodj = (0*Je.units + Jodj); # this is to ensure Jodj unit is compatible with Je unit
+
+		ret = smoothing(
+			te = te.magnitude,
+			Je = Je.magnitude,
+			Jodj = Jodj.to(Je.units).magnitude,
+			**smoothing_kwargs
+			);
+
+		return Return(
+			ts = ret.ts * te.units,
+			Js = ret.Jts * Je.units, 
+			mdlnJs = ret.mdlnJts / te.units); 
+
+class Plotter(object):
+	"""
+		A class for some standard auxiliary plots.
+	"""
+	def __init__(self, un=un_default):
+		self.style_data = {'color':'#1F20E0', 'label':'orig.'};
+		self.style_smoothed = {'color':'#E07E1F', 'label':'smooth.'};
+		self.style_fit = {'color':'#1FE07E'};
+		self.style_fit_outside_interval = {'color':'#1FE07E', "ls":"--"}; # approximation outside of fitting interval
+
+		self.un=un;
+
+	def Je(self, te, Je):
+		"""
+			Plot of experimentally measured luminescence output *Je* versus time *te*.
+		"""
+		plt.plot(te.magnitude, Je.magnitude, **self.style_data);
+		plt.yscale("log");
+		plt.xlabel(f"Time [${te.units:~L}$]");
+		plt.ylabel(f"Optical output [arb. u.]");
+		plt.legend();
+		plt.show();
+
+	def JeJs(self, te, Je, ts, Js):
+		"""
+			Plot of experimentally measured luminescence output *Je* versus time *te* and smoothed luminescence output *Js* versus time *ts*
+		"""
+		assert te.units == ts.units
+		assert Je.units == Js.units
+
+		plt.plot(te.magnitude, Je.magnitude, **self.style_data);
+		plt.plot(ts.magnitude, Js.magnitude, **self.style_smoothed);
+		plt.yscale("log");
+		plt.xlabel(f"Time [${te.units:~L}$]");
+		plt.ylabel(f"Optical output [arb. u.]");
+		plt.legend();
+		plt.show();
+
+	def rel_Je_vs_Js(self, te, Je, ts, Js):
+		"""
+			Plot of relative difference of experimentally measured luminescence output *Je* (time *te*) and smoothed luminescence output *Js* (time *ts*).
+		"""
+		assert te.units == ts.units
+		assert Je.units == Js.units
+
+		time_unit = te.units;
+
+		te = te.magnitude;
+		Je = Je.magnitude;
+		ts = ts.magnitude;
+		Js = Js.magnitude;
+
+		f_Js = scipy.interpolate.interp1d(ts, Js, kind="linear");
+
+		plt.plot(te, (Je - f_Js(te)) / f_Js(te), label="(orig. - smooth.) / smooth.", color=self.style_data["color"]);
+		plt.plot(te, 0*te, **self.style_smoothed);
+		plt.yscale("linear");
+		plt.xlabel(f"Time [${time_unit:~L}$]");
+		plt.ylabel(f"Rel. difference");
+		plt.legend();
+		plt.show();
 
 def exp_plus_c_fit(x, fx, c0):
 	def fun(c, x, y):
@@ -131,17 +283,13 @@ def new_approx(te,Je,initr, endr, st, nielinznk=False, gaussian=False):
 		if(nielinznk):
 			_,c0 = lznk_fit(tt, numpy.log(Je[zakr]), st=st);
 			Jt,_ = lznk_exp_fit(tt, Jg[zakr], c0=c0, st=st);
-			dJt = deriv(Jt,tt);
+			dJt = numpy.gradient(Jt,tt);
 			dlnJt = dJt/Jt;
 		else:
 			lnJt,_ = lznk_fit(tt, numpy.log(Jg[zakr]), st=st);
-			dlnJt = deriv(lnJt,tt);
+			dlnJt = numpy.gradient(lnJt,tt);
 			Jt = numpy.exp(lnJt);
-			dJt = deriv(Jt,tt);
-		#lnJt,_ = lznk_fit(tt, numpy.log(Jg[zakr]), st=st);
-		#dlnJt = deriv(lnJt,tt);
-		#Jt = numpy.exp(lnJt);
-		#dJt = deriv(Jt,tt);
+			dJt = numpy.gradient(Jt,tt);
 		
 		ts.append(te[i]);
 		Jts.append(Jt[poz]);
@@ -206,7 +354,7 @@ def zakres(i,n, N):
 
 def smoothing(
 	te, Je,
-	st,
+	st=1,
 	n0=1,
 	n1=100,
 	iters=1,
@@ -238,6 +386,8 @@ def smoothing(
 		* *plots* --- show plots
 		* *title* --- title of produced figures
 		* *tpoint* --- auxiliary indicatory point to be put on the figures (default: *None*, no point)
+
+		Return: a named tuple of:
 
 		* *ts*  --- a vector of time steps for smoothed luminescence intensity
 		* *Jts* --- a vector of smoothed luminescence intensity
@@ -276,7 +426,7 @@ def smoothing(
 			plt.show();
 
 	Je = numpy.abs(Je - Jodj);
-	dJe = deriv(Je, te);
+	dJe = numpy.gradient(Je, te);
 	dlnJe = dJe/Je;
 
 
@@ -311,7 +461,7 @@ def smoothing(
 		plt.title(title);
 		plt.show();
 
-		#dJe = deriv(Je, te);
+		#dJe = numpy.gradient(Je, te);
 		#plt.plot(te, dJe, color='green', label=r"$\frac{d J}{d t}$ experimental");
 		#plt.plot(ts, dlnJts*Jts, color='red', label=r"$\frac{d J}{d t}$ denoised");
 		#if(tpoint is not None):
