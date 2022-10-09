@@ -79,6 +79,85 @@ class EstimateABC(object):
 		"""
 		return Plotter(un=self.un);
 
+	def fit_poly(self, ts, Js, mdlnJs, mu, fit_interval=None):
+		"""
+			Polynomial approximation of negative logarithmic derivative of luminescence intensity.
+
+			Parameters:
+
+			* *ts*  --- a vector of time steps for smoothed luminescence intensity
+			* *Js* --- a vector of smoothed luminescence intensity
+			* *mdlnJs*  --- a vector of negative logarithmic derivative of luminescence intensity
+			* *mu* --- degree of the fitting polynomial
+
+			Return:
+
+			* *ys* --- total range of :math:`J_L^{1/\\mu}` based on smoothed values
+			* *yf* --- range of :math:`J_L^{1/\\mu}` used in fitting procedure
+			* *fit_interval* --- used fitting interval; either as given or inferred by this procedure, with units
+			* *p_mdlnJf* --- polynomial coefficients of approximation of negative logarithmic derivative of luminescence intensity; lowest-degree coeficients are at the end of this vector
+		"""
+
+		Return = collections.namedtuple("Return", ["ys", "yf", "fit_interval", "p_mdlnJf"])
+
+		un=self.un;
+
+		ys = Js**(1/mu);
+
+		f_mdlnJs = scipy.interpolate.interp1d(ys.magnitude, mdlnJs.magnitude, kind="linear");
+
+		if(fit_interval is None):
+			fit_interval = [min(ys).magnitude, max(ys).magnitude];
+
+		if(hasattr(fit_interval, "units")):
+			fit_interval = fit_interval.to(ys.units).magnitude;
+		
+		yf = numpy.linspace(*fit_interval, 100);
+		
+		polycoefs=numpy.polyfit(yf, f_mdlnJs(yf), deg=self.fit_deg);
+
+		p_mdlnJf=[p*mdlnJs.units / (ys.units**(len(polycoefs)-i-1)) for i,p in enumerate(polycoefs)]
+
+		ret = Return(
+			ys = ys,
+			yf = yf,
+			fit_interval = numpy.array(fit_interval)*ys.units,
+			p_mdlnJf=p_mdlnJf,
+			);
+
+		return ret;
+
+	def poly_coefs(self, p_mdlnJs):
+		"""
+			This function returns coefficients of a polynomial up to 2nd order as
+			:math:`\\gamma x^2 + \\beta x + \\alpha`.
+
+			Parameters:
+
+			* *p_mdlnJs* --- polynomial coefficients, 1, 2 or 3 numbers: [*gamma*, *beta*, *alpha*]; *alpha* is always last
+		"""
+		assert 0 < len(p_mdlnJs) <= 3, "Polynomial degree is to high for this procedure";
+
+		Return = collections.namedtuple("Return", ["alpha", "beta", "gamma"]);
+
+		alpha = p_mdlnJs[-1];
+
+		if(len(p_mdlnJs) >= 2):
+			beta = p_mdlnJs[-2];
+		else:
+			beta = 0.0;
+
+		if(len(p_mdlnJs) >= 3):
+			gamma = p_mdlnJs[-3];
+		else:
+			gamma = 0.0;
+
+		return Return(
+			alpha=alpha,
+			beta=beta,
+			gamma=gamma,
+			);
+
 	def remove_nonzero(self, x, y):
 		"""
 			Remove arguments and values for indices where the value is 0.
@@ -143,7 +222,7 @@ class Plotter(object):
 	def __init__(self, un=un_default):
 		self.style_data = {'color':'#1F20E0', 'label':'orig.'};
 		self.style_smoothed = {'color':'#E07E1F', 'label':'smooth.'};
-		self.style_fit = {'color':'#1FE07E'};
+		self.style_fit = {'color':'#1FE07E', 'label':'fit'};
 		self.style_fit_outside_interval = {'color':'#1FE07E', "ls":"--"}; # approximation outside of fitting interval
 
 		self.un=un;
@@ -157,7 +236,7 @@ class Plotter(object):
 		plt.xlabel(f"Time [${te.units:~L}$]");
 		plt.ylabel(f"Optical output [arb. u.]");
 		plt.legend();
-		plt.show();
+		#plt.show();
 
 	def JeJs(self, te, Je, ts, Js):
 		"""
@@ -172,7 +251,41 @@ class Plotter(object):
 		plt.xlabel(f"Time [${te.units:~L}$]");
 		plt.ylabel(f"Optical output [arb. u.]");
 		plt.legend();
-		plt.show();
+		#plt.show();
+
+	def _mdlnJ_extras(self, y, mdlnJ, mu):
+		"""
+			Labels, units and other details for negative logarithmic derivative of the normalized optical output plots.
+		"""
+		if(y.units != self.un.dimensionless):
+			y_units = " [${y.units:~L}$]";
+		else:
+			y_units = "";
+
+		if(mu is not None):
+			plt.xlabel(f"$J^{{{1/mu}}}${y_units}$]");
+		else:
+			plt.xlabel(f"{y_units}");
+		plt.ylabel(f"-d log(J) / dt $\\left[{mdlnJ.units:~L}\\right]$");
+		plt.legend(loc="best");
+		#plt.show();
+
+	def mdlnJf(self, yf, mdlnJf, mu=None):
+		"""
+			Plot fitted negative logarithmic derivative of the normalized optical output *mdlnJs* versus chosen argument *ys*.
+			Generally *ys* should be :math:`J_L^{1/\\mu}`, so if a correct *mu* is provided, 
+		"""
+		plt.plot(yf.magnitude , mdlnJf.magnitude, **self.style_fit);
+		self._mdlnJ_extras(yf, mdlnJf, mu);
+
+
+	def mdlnJs(self, ys, mdlnJs, mu=None):
+		"""
+			Plot (smoothed) negative logarithmic derivative of the normalized optical output *mdlnJs* versus chosen argument *ys*.
+			Generally *ys* should be :math:`J_L^{1/\\mu}`, so if a correct *mu* is provided, 
+		"""
+		plt.plot(ys.magnitude , mdlnJs.magnitude, **self.style_smoothed);
+		self._mdlnJ_extras(ys, mdlnJs, mu);
 
 	def rel_Je_vs_Js(self, te, Je, ts, Js):
 		"""
@@ -196,7 +309,9 @@ class Plotter(object):
 		plt.xlabel(f"Time [${time_unit:~L}$]");
 		plt.ylabel(f"Rel. difference");
 		plt.legend();
-		plt.show();
+		#plt.show();
+
+
 
 def exp_plus_c_fit(x, fx, c0):
 	def fun(c, x, y):
@@ -305,6 +420,18 @@ def new_approx(te,Je,initr, endr, st, nielinznk=False, gaussian=False):
 	ts = numpy.array(ts);
 
 	return (ts, Jts, dlnJts, Jt);
+
+def polyval(ps, x):
+	"""
+		Compute polynomial from values acounting for coefficients with units.
+
+		Parameters:
+
+		* *ps* --- array of polynomial coefficients, starting with highest-order coefficients; individual elements of this array can have units
+		* *x* --- vector of arguments
+	"""
+	e = [p*(x**i) for i, p in enumerate(reversed(ps))];
+	return sum(e);
 
 def read_data_headers(plik, delimiter=' ', **kwords):
 	with open(plik, 'r') as csvfile:
