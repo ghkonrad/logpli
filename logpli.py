@@ -96,9 +96,10 @@ class EstimateABC(object):
 			* *yf* --- range of :math:`J_L^{1/\\mu}` used in fitting procedure
 			* *fit_interval* --- used fitting interval; either as given or inferred by this procedure, with units
 			* *p_mdlnJf* --- polynomial coefficients of approximation of negative logarithmic derivative of luminescence intensity; lowest-degree coeficients are at the end of this vector
+			* *mu* --- *mu* used in fitting procedure
 		"""
 
-		Return = collections.namedtuple("Return", ["ys", "yf", "fit_interval", "p_mdlnJf"])
+		Return = collections.namedtuple("Return", ["ys", "yf", "fit_interval", "p_mdlnJf", "mu"])
 
 		un=self.un;
 
@@ -120,9 +121,10 @@ class EstimateABC(object):
 
 		ret = Return(
 			ys = ys,
-			yf = yf,
+			yf = yf*ys.units,
 			fit_interval = numpy.array(fit_interval)*ys.units,
 			p_mdlnJf=p_mdlnJf,
+			mu = mu,
 			);
 
 		return ret;
@@ -258,25 +260,32 @@ class Plotter(object):
 			Labels, units and other details for negative logarithmic derivative of the normalized optical output plots.
 		"""
 		if(y.units != self.un.dimensionless):
-			y_units = " [${y.units:~L}$]";
+			y_units = " $\\left[{y.units:~L}\\right]$";
 		else:
 			y_units = "";
 
 		if(mu is not None):
-			plt.xlabel(f"$J^{{{1/mu}}}${y_units}$]");
+			plt.xlabel(f"$J^{{{1/mu}}}$ {y_units}");
 		else:
 			plt.xlabel(f"{y_units}");
 		plt.ylabel(f"-d log(J) / dt $\\left[{mdlnJ.units:~L}\\right]$");
 		plt.legend(loc="best");
 		#plt.show();
 
-	def mdlnJf(self, yf, mdlnJf, mu=None):
+	def mdlnJf(self, yf, mdlnJf, mu=None, fit_interval=None):
 		"""
 			Plot fitted negative logarithmic derivative of the normalized optical output *mdlnJs* versus chosen argument *ys*.
-			Generally *ys* should be :math:`J_L^{1/\\mu}`, so if a correct *mu* is provided, 
+			Generally *ys* should be :math:`J_L^{1/\\mu}`, so if a correct *mu* is provided, a proper x-axis label will be added. Parameter *mu* is not used otherwise.
+
 		"""
 		plt.plot(yf.magnitude , mdlnJf.magnitude, **self.style_fit);
 		self._mdlnJ_extras(yf, mdlnJf, mu);
+
+		if(fit_interval is not None):
+			fit_interval = fit_interval.to(yf.units);
+			plt.axvline(x = fit_interval[0].magnitude, color=self.style_fit["color"], ls="--", lw=2) # granica fitowania
+			plt.axvline(x = fit_interval[1].magnitude, color=self.style_fit["color"], ls="--", lw=2) # granica fitowania
+
 
 
 	def mdlnJs(self, ys, mdlnJs, mu=None):
