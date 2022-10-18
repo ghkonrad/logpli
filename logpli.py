@@ -45,19 +45,9 @@ class EstimateABC(object):
 		Estimate ABC constants.
 		
 		Prameters:
-		* *fit_deg* --- degree of fitting polynomial, at least 2
 		* *un* --- a :class:`pint.UnitRegistry` instance
 	"""
-		#* *time_unit* --- time unit on plots and in the text file to/from *logpli*
-		#* *fit_deg* --- degree of fitting polynomial, at least 2
-		#* *fig_prefix* --- if not None, figures will be saved in this directory
-		#* *mkdir* --- if the *fig_prefix* directory shall be created if it does not exist
-	#def __init__(self, time_unit, fit_deg = 2, fig_prefix=None, mkdir=False, un = un_default):
-	def __init__(self, fit_deg = 2, un = un_default):
-		assert(fit_deg >= 2);
-
-		self.fit_deg = fit_deg;
-
+	def __init__(self, un = un_default):
 		self.un = un;
 		
 
@@ -79,6 +69,165 @@ class EstimateABC(object):
 		"""
 		return Plotter(un=self.un);
 
+	@cached_property
+	def print(self):
+		"""
+			Return a compatible :class:`PrintInfo` instance to display information.
+			Multiple uses results in the same instance being returned.
+		"""
+		return PrintInfo(un=self.un);
+
+	def abc(self, alpha, beta, gamma, mu, n0):
+		"""
+			Compute ABC recombination parameters based on approximation of a negative logarithmic derivative of luminescence intensity by 2nd-order polynomial :math:`r_L(y) \\approx \\alpha + \\beta y + \\gamma y^2`. 
+
+			Parameters:
+
+			* *alpha*, *beta*, *gamma* --- polynomial coefficients
+			* *mu* --- argument in definition :math:`y = J^{1/\mu}`
+			* *n0* --- initial minority carrier concentration
+
+			Return: a named tuple:
+
+			* *A*, *B*, *C* --- ABC recombination parameters
+		"""
+		Return = collections.namedtuple("Return", ["A", "B", "C"])
+		un = self.un;
+
+		return Return(
+			A = (alpha/(mu)).to(1/un.s),
+			B = (beta/(mu*n0)).to(un.cm**3/un.s),
+			C = (gamma/(mu * n0**2)).to(un.cm**6/un.s),
+			);
+
+	def fit_J(self, te, Je, mu, t0, t1, init_alpha = None, init_beta = None, init_gamma = None, alpha = None, beta = None, gamma = None, minimize_method = "CG", log = False, **minimize_options_kwargs):
+		r"""
+			This function improves optical output *Jfit* based on assumptions that the (negative)logarithmic derivative of *J* is given by polynomial
+			:math:`r_L(y) = \alpha + \beta y + \gamma y^2`
+			
+			The procedure chooses *alpha*, *beta* and *gamma* by minimalizing least-squares error of *Jfit* versus *Je* on a given interval.
+			
+			Parameters:
+			
+			* *t0*, *t1* --- lower and upper boundary of interval; fitting interval beginning time must be within this interval
+			* *init_alpha*,*init_beta*,*init_gamma* --- initial values of *alpha*, *beta* and *gamma*; if not set, already computed fit will be used; it shall be just float numbers (no units), as these parameters are dimensionless anyway
+			* *alpha*, *beta*, *gamma* --- parameter value may be fixed (*None* --- do not fix; this is default),
+			* *minimize_method* --- minimalization method accepted by :func:`scipy.optimize.minimize`
+			* *minimize_options_kwards* --- anything else will be passed as named arguments to :func:`scipy.optimize.fmin_cg`
+			* *log* --- operate on logarithms of parameters instead of parameters themselves (default: false); the parameters shall not be converted to logarithms manually, this procedure takes care of that transparently, they just have to be positive
+		"""
+		
+		Return = collections.namedtuple("Return", ["alpha", "beta", "gamma", "mu"])
+
+		un = self.un;
+		time_unit = te.units;
+
+		params = ["alpha", "beta", "gamma"];
+
+		fixvals = {
+			"alpha": alpha,
+			"beta" : beta,
+			"gamma": gamma,
+		};
+
+		if(log):
+			for key, val in [(param, fixvals[param]) for param in params]+[("init_alpha", init_alpha), ("init_beta", init_beta), ("init_gamma", init_gamma)]:
+				if val is not None:
+					assert val > 0, f"Invalid value of {key} ({val}). For logarithmic search scale, parameters must be positive";
+
+		rngf = (t0 <= te) * (te <= t1) * (Je.magnitude != 0); # wywalam też zera w prądzie, bo przez nie tylko trudniej liczyć (czasem się zdarzają przez błędy pomiaru)
+
+		tstart = te[0];
+		Jstart = Je[0];
+
+
+		tf = te[rngf]; # for these times we do the fitting
+		Jf = Je[rngf];
+
+		def params2x(**kwargs):
+			x = [];
+			for param in params:
+				if(fixvals[param] is None):
+					if(not log):
+						x.append(kwargs[param].to(1/time_unit).magnitude);
+					else:
+						x.append(numpy.log(kwargs[param].to(1/time_unit).magnitude));
+
+			return x;
+
+		def x2params(x):
+			ret = {};
+			d = collections.deque(x);
+			for param in params:
+				if(fixvals[param] is None):
+					if(not log):
+						ret[param] = d.popleft() / time_unit;
+					else:
+						ret[param] = numpy.exp(d.popleft()) / time_unit;
+				else:
+					ret[param] = fixvals[param].to(time_unit);
+
+			assert len(d) == 0, "Too many elements on the input list";
+			return ret;
+		
+		#print(tf)
+
+		def func(x):
+			Jfit = self.J_from_poly(
+				tf=tf, 
+				tstart=tstart,
+				Jstart=Jstart,
+				mu=mu,
+				**x2params(x),
+				);
+			return numpy.linalg.norm(((Jf - Jfit) / Jf).to(un.dimensionless).magnitude);
+
+		if(init_alpha is None):
+			init_alpha = alpha;
+
+		if(init_beta is None):
+			init_beta = beta;
+
+		if(init_gamma is None):
+			init_gamma = gamma;
+
+		x0 = params2x(
+			alpha = init_alpha,
+			beta = init_beta,
+			gamma = init_gamma,
+			);
+
+		if(log):
+			for key, val in x2params(x0).items():
+				if val is not None:
+					assert val.magnitude > 0, f"Invalid initial value {key} ({val}). For logarithmic search scale, parameters must be positive (check implicit values --- from initial fits)";
+
+		#f_Jfit0 = scipy.interpolate.interp1d(
+		#	*self._reverse_fit_helper(t0.magnitude, t1.magnitude, tstart, *x0),
+		#	kind="linear"
+		#		 );
+
+		#print(func(x0))
+
+		#print(self.te[idx0].magnitude, self.Je[idx0].magnitude)
+		#print(self.fit_approx_idcs(), idx0)
+
+		print("Initial value:", func(x0));
+		#result = scipy.optimize.fmin_cg(func, x0, epsilon = 1e-11)
+		res = scipy.optimize.minimize(func, x0, method = minimize_method, options=minimize_options_kwargs)
+
+		result = x2params(res.x);
+
+		print(result);
+
+		return Return(
+			alpha = result["alpha"],
+			beta  = result["beta"],
+			gamma = result["gamma"],
+			mu = mu,
+			);
+
+
 	def fit_poly(self, ts, Js, mdlnJs, mu, fit_interval=None):
 		"""
 			Polynomial approximation of negative logarithmic derivative of luminescence intensity.
@@ -95,7 +244,7 @@ class EstimateABC(object):
 			* *ys* --- total range of :math:`J_L^{1/\\mu}` based on smoothed values
 			* *yf* --- range of :math:`J_L^{1/\\mu}` used in fitting procedure
 			* *fit_interval* --- used fitting interval; either as given or inferred by this procedure, with units
-			* *p_mdlnJf* --- polynomial coefficients of approximation of negative logarithmic derivative of luminescence intensity; lowest-degree coeficients are at the end of this vector
+			* *p_mdlnJf* --- polynomial coefficients of approximation of negative logarithmic derivative of luminescence intensity :math:`r_L(y) \\approx \\alpha + \\beta y + \\gamma y^2`; lowest-degree coeficients are at the end of this vector
 			* *mu* --- *mu* used in fitting procedure
 		"""
 
@@ -115,7 +264,7 @@ class EstimateABC(object):
 		
 		yf = numpy.linspace(*fit_interval, 100);
 		
-		polycoefs=numpy.polyfit(yf, f_mdlnJs(yf), deg=self.fit_deg);
+		polycoefs=numpy.polyfit(yf, f_mdlnJs(yf), deg=2);
 
 		p_mdlnJf=[p*mdlnJs.units / (ys.units**(len(polycoefs)-i-1)) for i,p in enumerate(polycoefs)]
 
@@ -128,6 +277,68 @@ class EstimateABC(object):
 			);
 
 		return ret;
+
+	def J_from_poly(self, tf, tstart, Jstart, alpha, beta, gamma, mu):
+		r"""
+			This function computes optical output *Jf* based on assumptions that the (negative)logarithmic derivative of *J* is given by polynomial
+			:math:`r_L(y) = \alpha + \beta y + \gamma y^2`
+			where :math:`y = J^{1/\mu}`.
+			
+			This helper function accepts all involved parameters (it does not use *self* parameters).
+			
+			The parameters must be numbers (not *pint* units), scaled as in description below.
+			
+			Parameters:
+			
+			* *tf* --- a monotone vector of time argument to compute optical output for
+			* *tstart* --- initial condition time
+			* *Jstart* --- initial condition normalized output
+			* *alpha*, *beta*, *gamma* --- polynomial coefficients
+			* *mu* --- power used in polynomial argument definition: :math:`y = J^{1/\mu}`
+
+			Return: *Jf* --- estimated optical output corresponding to given :math:`r_L`
+		"""
+		
+
+		un = self.un;
+		tfit = tf.magnitude;
+		tstart = tstart.to(tf.units).magnitude;
+
+		alpha = alpha.to(1/tf.units).magnitude;
+		beta  = beta.to(1/tf.units).magnitude;
+		gamma = gamma.to(1/tf.units).magnitude;
+		
+		Jstart = Jstart.to(un.dimensionless).magnitude;
+
+
+
+		tfit0 = tfit[0]; # initial condition would be here for the tf range
+
+		rhs = lambda J, t: -(alpha * J + beta * (J**(1 + 1/mu)) + gamma * (J**(1 + 2/mu)));
+
+		# First, we go from whatever the starting point is to the beginning of the tf
+		if(tstart == tfit0):
+			# alright, so we are at the start already
+			Jf0 = Jstart;
+		else:
+			Jfitpre = scipy.integrate.odeint(
+				rhs,
+				Jstart,
+				[tstart, tfit0],
+			);
+
+			Jf0 = Jfitpre[-1];
+
+		# Initial condition prepared, we compute Jf values for tf=tfit
+
+		Jf = scipy.integrate.odeint(
+				rhs,
+				Jf0,
+				tfit,
+			);
+		Jf = Jf.T[0]; # odeint zwraca wektor kolumnowy, przynajmniej tutaj
+		return Jf * un.dimensionless;
+
 
 	def poly_coefs(self, p_mdlnJs):
 		"""
@@ -255,6 +466,27 @@ class Plotter(object):
 		plt.legend();
 		#plt.show();
 
+	def Jf(self, tf, Jf):
+		"""
+			Plot of luminescence output *Jf* versus time *tf* calculated from polynomial approximation of :math:`r_L`.
+		"""
+		plt.plot(tf.magnitude, Jf.magnitude, **self.style_fit);
+		plt.yscale("log");
+		plt.xlabel(f"Time [${tf.units:~L}$]");
+		plt.ylabel(f"Optical output [arb. u.]");
+		plt.legend();
+
+	def Js(self, ts, Js):
+		"""
+			Plot of smoothed luminescence output *Js* versus time *ts*
+		"""
+		plt.plot(ts.magnitude, Js.magnitude, **self.style_smoothed);
+		plt.yscale("log");
+		plt.xlabel(f"Time [${ts.units:~L}$]");
+		plt.ylabel(f"Optical output [arb. u.]");
+		plt.legend();
+		#plt.show();
+
 	def _mdlnJ_extras(self, y, mdlnJ, mu):
 		"""
 			Labels, units and other details for negative logarithmic derivative of the normalized optical output plots.
@@ -296,30 +528,73 @@ class Plotter(object):
 		plt.plot(ys.magnitude , mdlnJs.magnitude, **self.style_smoothed);
 		self._mdlnJ_extras(ys, mdlnJs, mu);
 
-	def rel_Je_vs_Js(self, te, Je, ts, Js):
+	def rel_Je_vs_Js(self, te, Je, ts=None, Js=None, tf = None, Jf = None):
 		"""
-			Plot of relative difference of experimentally measured luminescence output *Je* (time *te*) and smoothed luminescence output *Js* (time *ts*).
+			Plot of relative difference of experimentally measured luminescence output *Je* (time *te*) and smoothed luminescence output *Js* (time *ts*; if *None*, then it is omitted).
+			Also *Jf* (time *tf*) may be passed to plot ODE solution result base on ploynomial fit.
 		"""
-		assert te.units == ts.units
-		assert Je.units == Js.units
+		if(ts is not None):
+			assert te.units == ts.units
+			assert Je.units == Js.units
+		if(tf is not None):
+			assert te.units == tf.units
+			assert Je.units == Jf.units
 
 		time_unit = te.units;
 
 		te = te.magnitude;
 		Je = Je.magnitude;
-		ts = ts.magnitude;
-		Js = Js.magnitude;
+		if(ts is not None):
+			ts = ts.magnitude;
+			Js = Js.magnitude;
 
-		f_Js = scipy.interpolate.interp1d(ts, Js, kind="linear");
+		if(tf is not None):
+			tf = tf.magnitude;
+			Jf = Jf.magnitude;
 
-		plt.plot(te, (Je - f_Js(te)) / f_Js(te), label="(orig. - smooth.) / smooth.", color=self.style_data["color"]);
-		plt.plot(te, 0*te, **self.style_smoothed);
+		if(ts is not None):
+			f_Js = scipy.interpolate.interp1d(ts, Js, kind="linear");
+			plt.plot(te, (Je - f_Js(te)) / Je, label="(orig. - smooth.) / orig.", color=self.style_smoothed["color"]);
+
+		if(tf is not None):
+			f_Jf = scipy.interpolate.interp1d(tf, Jf, kind="linear");
+			plt.plot(te, (Je - f_Jf(te)) / Je, label="(orig. - fit) / orig.", color=self.style_fit["color"]);
+		
+		plt.plot(te, 0*te, **self.style_data);
 		plt.yscale("linear");
 		plt.xlabel(f"Time [${time_unit:~L}$]");
 		plt.ylabel(f"Rel. difference");
 		plt.legend();
 		#plt.show();
 
+class PrintInfo(object):
+	"""
+		A class for displaying information..
+	"""
+	def __init__(self, un=un_default):
+		self.un=un;
+
+	def abc(self, A, B, C):
+		"""
+			Print ABC recombination constants
+		"""
+		display(Latex(f"$A={A:~Le}$"));
+		display(Latex(f"$B={B:~Le}$"));
+		display(Latex(f"$C={C:~Le}$"));
+
+	def mu(self, mu):
+		"""
+			Print dependence of polynomial argument on *mu*.
+		"""
+		display(Latex(f"$y = J^{{{1/mu}}}$"));
+
+	def poly_coefs(self, alpha, beta, gamma):
+		"""
+			Print polynomial coefficients for :math:`r_L(y) = \alpha + \beta y + \gamma y^2`
+		"""
+		display(Latex(f"$\\alpha={alpha:~Le}$"));
+		display(Latex(f"$\\beta={beta:~Le}$"));
+		display(Latex(f"$\\gamma={gamma:~Le}$"));
 
 
 def exp_plus_c_fit(x, fx, c0):
