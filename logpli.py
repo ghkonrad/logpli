@@ -100,7 +100,7 @@ class EstimateABC(object):
 			C = (gamma/(mu * n0**2)).to(un.cm**6/un.s),
 			);
 
-	def fit_J(self, te, Je, mu, t0, t1, init_alpha = None, init_beta = None, init_gamma = None, alpha = None, beta = None, gamma = None, minimize_method = "CG", log = False, **minimize_options_kwargs):
+	def fit_J(self, te, Je, mu, t0, t1, tstart, init_alpha = None, init_beta = None, init_gamma = None, alpha = None, beta = None, gamma = None, minimize_method = "CG", log = False, **minimize_options_kwargs):
 		r"""
 			This function improves optical output *Jfit* based on assumptions that the (negative)logarithmic derivative of *J* is given by polynomial
 			:math:`r_L(y) = \alpha + \beta y + \gamma y^2`
@@ -109,15 +109,28 @@ class EstimateABC(object):
 			
 			Parameters:
 			
+			* *te*, *Je* --- experimental values to be fitted to
+			* *mu* --- argument power in :math:`y=J_L^{1/\\mu}`
 			* *t0*, *t1* --- lower and upper boundary of interval; fitting interval beginning time must be within this interval
+			* *tstart* --- the result shall be pinned to the experimental value at this point (the point is arbitrary within the *te* range, i.e. it does not have to correspond to the actual value in *te*, but it must be within range covered by *te*)
 			* *init_alpha*,*init_beta*,*init_gamma* --- initial values of *alpha*, *beta* and *gamma*; if not set, already computed fit will be used; it shall be just float numbers (no units), as these parameters are dimensionless anyway
 			* *alpha*, *beta*, *gamma* --- parameter value may be fixed (*None* --- do not fix; this is default),
 			* *minimize_method* --- minimalization method accepted by :func:`scipy.optimize.minimize`
 			* *minimize_options_kwards* --- anything else will be passed as named arguments to :func:`scipy.optimize.fmin_cg`
 			* *log* --- operate on logarithms of parameters instead of parameters themselves (default: false); the parameters shall not be converted to logarithms manually, this procedure takes care of that transparently, they just have to be positive
+
+			Result: a named tuple
+
+			* *alpha*, *beta*, *gamma* --- fitting parameters 
+			* *mu*, *tstart* --- repeated parameters
+			* *Jstart* --- initial condition used in the calculations
+			* *init_val* --- initial relative error value
+			* *final_val* --- final relative error value
 		"""
 		
-		Return = collections.namedtuple("Return", ["alpha", "beta", "gamma", "mu"])
+		assert min(te) <= tstart <= max(te), "Starting value *tstart* must be within range of experimamental values *te* "
+
+		Return = collections.namedtuple("Return", ["alpha", "beta", "gamma", "mu", "tstart", "Jstart", "init_val", "final_val"])
 
 		un = self.un;
 		time_unit = te.units;
@@ -137,8 +150,8 @@ class EstimateABC(object):
 
 		rngf = (t0 <= te) * (te <= t1) * (Je.magnitude != 0); # wywalam też zera w prądzie, bo przez nie tylko trudniej liczyć (czasem się zdarzają przez błędy pomiaru)
 
-		tstart = te[0];
-		Jstart = Je[0];
+		f_Je = interpolate_with_units(te, Je);
+		Jstart = f_Je(tstart);
 
 
 		tf = te[rngf]; # for these times we do the fitting
@@ -182,6 +195,7 @@ class EstimateABC(object):
 				);
 			return numpy.linalg.norm(((Jf - Jfit) / Jf).to(un.dimensionless).magnitude);
 
+
 		if(init_alpha is None):
 			init_alpha = alpha;
 
@@ -196,6 +210,8 @@ class EstimateABC(object):
 			beta = init_beta,
 			gamma = init_gamma,
 			);
+
+
 
 		if(log):
 			for key, val in x2params(x0).items():
@@ -212,19 +228,24 @@ class EstimateABC(object):
 		#print(self.te[idx0].magnitude, self.Je[idx0].magnitude)
 		#print(self.fit_approx_idcs(), idx0)
 
-		print("Initial value:", func(x0));
+		#print("Initial value:", func(x0));
+		init_val = func(x0);
 		#result = scipy.optimize.fmin_cg(func, x0, epsilon = 1e-11)
 		res = scipy.optimize.minimize(func, x0, method = minimize_method, options=minimize_options_kwargs)
 
 		result = x2params(res.x);
 
-		print(result);
+		sinal_val = func(res.x);
 
 		return Return(
 			alpha = result["alpha"],
 			beta  = result["beta"],
 			gamma = result["gamma"],
+			tstart = tstart,
+			Jstart = Jstart,
 			mu = mu,
+			init_val = init_val,
+			final_val = final_val,
 			);
 
 
@@ -606,6 +627,14 @@ def exp_plus_c_fit(x, fx, c0):
 	#print(c0, c);
 	fit = fun(c,x,0);
 	return (fit,c);
+
+def interpolate_with_units(x, y):
+	"""
+		This function returns a piecewise-linear interpolant of a function :math:`y(x)`, where vectors *x* and *y* are given in units. Returned functions will accept units and perform proper conversions for compatible units.
+	"""
+	_f = scipy.interpolate.interp1d(x.magnitude, y.magnitude, kind="linear");
+	f = lambda _x: _f(_x.to(x.units).magnitude) * y.units;
+	return f;
 
 def load_exp_data(plik, kol_t=0, kol_J = 1, delimiter=' ', **kwords):
 	t_J = numpy.genfromtxt(plik, delimiter=delimiter, **kwords)
