@@ -43,6 +43,8 @@ un_default = pint.UnitRegistry(system='mks');
 class EstimateABC(object):
 	"""
 		Estimate ABC constants.
+
+		The estimate is based on calculation of negative logarithmic derivative of luminescence intensity :math:`r_L:=-\\frac{d}{dt} \\log(J)` from experimental normalized luminescence intensity :math:`J`.
 		
 		Prameters:
 		* *un* --- a :class:`pint.UnitRegistry` instance
@@ -51,7 +53,7 @@ class EstimateABC(object):
 		self.un = un;
 		
 
-	def limit_args(self, x, y, x_min, x_max):
+	def _limit_args(self, x, y, x_min, x_max):
 		"""
 			Limit argument vector *x* and value vector *y* so that only arguments in [*x_min*, *x_max*] remain.
 
@@ -61,23 +63,39 @@ class EstimateABC(object):
 
 		return (x[indices], y[indices]);
 
-	@cached_property
-	def plot(self):
+	def _poly_coefs(self, p_rLs):
 		"""
-			Return a compatible :class:`Plotter` instance to perform plots.
-			Multiple uses results in the same instance being returned.
-		"""
-		return Plotter(un=self.un);
+			This function returns coefficients of a polynomial up to 2nd order as
+			:math:`\\gamma x^2 + \\beta x + \\alpha`.
 
-	@cached_property
-	def print(self):
-		"""
-			Return a compatible :class:`PrintInfo` instance to display information.
-			Multiple uses results in the same instance being returned.
-		"""
-		return PrintInfo(un=self.un);
+			Parameters:
 
-	def abc(self, alpha, beta, gamma, mu, n0):
+			* *p_rLs* --- polynomial coefficients, 1, 2 or 3 numbers: [*gamma*, *beta*, *alpha*]; *alpha* is always last
+		"""
+		assert 0 < len(p_rLs) <= 3, "Polynomial degree is to high for this procedure";
+
+		Return = collections.namedtuple("Return", ["alpha", "beta", "gamma"]);
+
+		alpha = p_rLs[-1];
+
+		if(len(p_rLs) >= 2):
+			beta = p_rLs[-2];
+		else:
+			beta = 0.0;
+
+		if(len(p_rLs) >= 3):
+			gamma = p_rLs[-3];
+		else:
+			gamma = 0.0;
+
+		return Return(
+			alpha=alpha,
+			beta=beta,
+			gamma=gamma,
+			);
+
+
+	def abc_from_coefs(self, alpha, beta, gamma, mu, n0):
 		"""
 			Compute ABC recombination parameters based on approximation of a negative logarithmic derivative of luminescence intensity by 2nd-order polynomial :math:`r_L(y) \\approx \\alpha + \\beta y + \\gamma y^2`. 
 
@@ -100,7 +118,7 @@ class EstimateABC(object):
 			C = (gamma/(mu * n0**2)).to(un.cm**6/un.s),
 			);
 
-	def fit_J(self, te, Je, mu, t0, t1, tstart, init_alpha = None, init_beta = None, init_gamma = None, alpha = None, beta = None, gamma = None, minimize_method = "CG", log = False, **minimize_options_kwargs):
+	def J_fit(self, te, Je, mu, t0, t1, tstart, init_alpha = None, init_beta = None, init_gamma = None, alpha = None, beta = None, gamma = None, minimize_method = "CG", log = False, **minimize_options_kwargs):
 		r"""
 			This function improves optical output *Jfit* based on assumptions that the (negative)logarithmic derivative of *J* is given by polynomial
 			:math:`r_L(y) = \alpha + \beta y + \gamma y^2`
@@ -186,7 +204,7 @@ class EstimateABC(object):
 		#print(tf)
 
 		def func(x):
-			Jfit = self.J_from_poly(
+			Jfit = self.J_from_coefs(
 				tf=tf, 
 				tstart=tstart,
 				Jstart=Jstart,
@@ -235,7 +253,7 @@ class EstimateABC(object):
 
 		result = x2params(res.x);
 
-		sinal_val = func(res.x);
+		final_val = func(res.x);
 
 		return Return(
 			alpha = result["alpha"],
@@ -248,58 +266,7 @@ class EstimateABC(object):
 			final_val = final_val,
 			);
 
-
-	def fit_poly(self, ts, Js, mdlnJs, mu, fit_interval=None):
-		"""
-			Polynomial approximation of negative logarithmic derivative of luminescence intensity.
-
-			Parameters:
-
-			* *ts*  --- a vector of time steps for smoothed luminescence intensity
-			* *Js* --- a vector of smoothed luminescence intensity
-			* *mdlnJs*  --- a vector of negative logarithmic derivative of luminescence intensity
-			* *mu* --- degree of the fitting polynomial
-
-			Return:
-
-			* *ys* --- total range of :math:`J_L^{1/\\mu}` based on smoothed values
-			* *yf* --- range of :math:`J_L^{1/\\mu}` used in fitting procedure
-			* *fit_interval* --- used fitting interval; either as given or inferred by this procedure, with units
-			* *p_mdlnJf* --- polynomial coefficients of approximation of negative logarithmic derivative of luminescence intensity :math:`r_L(y) \\approx \\alpha + \\beta y + \\gamma y^2`; lowest-degree coeficients are at the end of this vector
-			* *mu* --- *mu* used in fitting procedure
-		"""
-
-		Return = collections.namedtuple("Return", ["ys", "yf", "fit_interval", "p_mdlnJf", "mu"])
-
-		un=self.un;
-
-		ys = Js**(1/mu);
-
-		f_mdlnJs = scipy.interpolate.interp1d(ys.magnitude, mdlnJs.magnitude, kind="linear");
-
-		if(fit_interval is None):
-			fit_interval = [min(ys).magnitude, max(ys).magnitude];
-
-		if(hasattr(fit_interval, "units")):
-			fit_interval = fit_interval.to(ys.units).magnitude;
-		
-		yf = numpy.linspace(*fit_interval, 100);
-		
-		polycoefs=numpy.polyfit(yf, f_mdlnJs(yf), deg=2);
-
-		p_mdlnJf=[p*mdlnJs.units / (ys.units**(len(polycoefs)-i-1)) for i,p in enumerate(polycoefs)]
-
-		ret = Return(
-			ys = ys,
-			yf = yf*ys.units,
-			fit_interval = numpy.array(fit_interval)*ys.units,
-			p_mdlnJf=p_mdlnJf,
-			mu = mu,
-			);
-
-		return ret;
-
-	def J_from_poly(self, tf, tstart, Jstart, alpha, beta, gamma, mu):
+	def J_from_coefs(self, tf, tstart, Jstart, alpha, beta, gamma, mu):
 		r"""
 			This function computes optical output *Jf* based on assumptions that the (negative)logarithmic derivative of *J* is given by polynomial
 			:math:`r_L(y) = \alpha + \beta y + \gamma y^2`
@@ -360,55 +327,19 @@ class EstimateABC(object):
 		Jf = Jf.T[0]; # odeint zwraca wektor kolumnowy, przynajmniej tutaj
 		return Jf * un.dimensionless;
 
-
-	def poly_coefs(self, p_mdlnJs):
+	def J_limit_t(self, te, Je, tmin, tmax):
 		"""
-			This function returns coefficients of a polynomial up to 2nd order as
-			:math:`\\gamma x^2 + \\beta x + \\alpha`.
+			Limit experimental results (*te*, *Je*) to a given time interval [*tmin*, *tmax*].
 
-			Parameters:
-
-			* *p_mdlnJs* --- polynomial coefficients, 1, 2 or 3 numbers: [*gamma*, *beta*, *alpha*]; *alpha* is always last
+			Return: a named tuple (*tl*, *Jl*) of data trimmed to given interval.
 		"""
-		assert 0 < len(p_mdlnJs) <= 3, "Polynomial degree is to high for this procedure";
+		Return = collections.namedtuple("Return", ["tl", "Jl",])
 
-		Return = collections.namedtuple("Return", ["alpha", "beta", "gamma"]);
+		(tl, Jl) = self._limit_args(te, Je, tmin, tmax);
 
-		alpha = p_mdlnJs[-1];
+		return Return(tl=tl, Jl=Jl);
 
-		if(len(p_mdlnJs) >= 2):
-			beta = p_mdlnJs[-2];
-		else:
-			beta = 0.0;
-
-		if(len(p_mdlnJs) >= 3):
-			gamma = p_mdlnJs[-3];
-		else:
-			gamma = 0.0;
-
-		return Return(
-			alpha=alpha,
-			beta=beta,
-			gamma=gamma,
-			);
-
-	def remove_nonzero(self, x, y):
-		"""
-			Remove arguments and values for indices where the value is 0.
-
-			Parameters:
-
-			* *x* --- argument vector
-			* *y* --- value vector
-
-			Return: (*x*, *y*) with zero values removed
-		"""
-		assert x.shape == y.shape
-
-		nonzero_idcs = y.magnitude.nonzero();
-		return (x[nonzero_idcs], y[nonzero_idcs]);
-
-	def smooth(self, te, Je, Jodj=None, **smoothing_kwargs):
+	def J_smooth(self, te, Je, Jodj=None, **smoothing_kwargs):
 		"""
 			Smooth experimental data.
 
@@ -419,14 +350,14 @@ class EstimateABC(object):
 			* *Jodj* --- value to be subtracted from Je (with units)
 			* All optional parameters of :func:`smoothing` may be passed.
 
-			Return: a named tuple (*ts*, *Jts*, *mdlnJts*) 
+			Return: a named tuple (*ts*, *Jts*, *rLs*) 
 
 			* *ts*  --- a vector of time steps for smoothed luminescence intensity
 			* *Js* --- a vector of smoothed luminescence intensity
-			* *mdlnJs*  --- a vector of negative logarithmic derivative of luminescence intensity
+			* *rLs*  --- a vector of negative logarithmic derivative of luminescence intensity
 		"""
 
-		Return = collections.namedtuple("Return", ["ts", "Js", "mdlnJs"])
+		Return = collections.namedtuple("Return", ["ts", "Js", "rLs"])
 		#plt.plot(te , Je, **self.style_data);
 		#plt.yscale("log");
 		#plt.xlabel(f"Time [${self.time_unit:~L}$]");
@@ -447,7 +378,119 @@ class EstimateABC(object):
 		return Return(
 			ts = ret.ts * te.units,
 			Js = ret.Jts * Je.units, 
-			mdlnJs = ret.mdlnJts / te.units); 
+			rLs = ret.rLts / te.units); 
+
+	def rL_fit_poly(self, ts, Js, rLs, mu, fit_interval=None):
+		"""
+			Polynomial approximation of negative logarithmic derivative of luminescence intensity.
+
+			Parameters:
+
+			* *ts*  --- a vector of time steps for smoothed luminescence intensity
+			* *Js* --- a vector of smoothed luminescence intensity
+			* *rLs*  --- a vector of negative logarithmic derivative of luminescence intensity
+			* *mu* --- degree of the fitting polynomial
+
+			Return:
+
+			* *ys* --- total range of :math:`J_L^{1/\\mu}` based on smoothed values
+			* *yf* --- range of :math:`J_L^{1/\\mu}` used in fitting procedure
+			* *fit_interval* --- used fitting interval; either as given or inferred by this procedure, with units
+			* *alpha*, *beta*, *gamma* --- polynomial coefficients of approximation of negative logarithmic derivative of luminescence intensity :math:`r_L(y) \\approx \\alpha + \\beta y + \\gamma y^2`
+			* *mu* --- *mu* used in fitting procedure
+		"""
+
+		Return = collections.namedtuple("Return", ["ys", "yf", "fit_interval", "alpha", "beta", "gamma", "mu"])
+
+		un=self.un;
+
+		ys = Js**(1/mu);
+
+		f_rLs = scipy.interpolate.interp1d(ys.magnitude, rLs.magnitude, kind="linear");
+
+		if(fit_interval is None):
+			fit_interval = [min(ys).magnitude, max(ys).magnitude];
+
+		if(hasattr(fit_interval, "units")):
+			fit_interval = fit_interval.to(ys.units).magnitude;
+		
+		yf = numpy.linspace(*fit_interval, 100);
+		
+		polycoefs=numpy.polyfit(yf, f_rLs(yf), deg=2);
+
+		p_rLf=[p*rLs.units / (ys.units**(len(polycoefs)-i-1)) for i,p in enumerate(polycoefs)]
+
+		coefs = self._poly_coefs(p_rLf);
+
+		ret = Return(
+			ys = ys,
+			yf = yf*ys.units,
+			fit_interval = numpy.array(fit_interval)*ys.units,
+			alpha = coefs.alpha,
+			beta = coefs.beta,
+			gamma = coefs.gamma,
+			mu = mu,
+			);
+
+		return ret;
+
+	def rL_from_coefs(self, J, alpha, beta, gamma, mu):
+		"""
+			This function calculates the polynomial approximation of :math:`r_L (J_L^{1/\\mu})` as :math:`r_L(y) \\approx \\alpha + \\beta y + \\gamma y^2` for :math:`y:=J_L^{1/\\mu}`.
+
+			Parameters:
+
+			* *J* --- a vector of luminescence intensity (any value range, may be unrelated to experimental/smoothed/fitted values)
+			* *alpha*, *beta*, *gamma* --- polynomial coefficients
+			* *mu* --- parameter in argument :math:`y:=J_L^{1/\\mu}`
+
+			Return: a named tuple
+
+			* *y* --- a vector of values :math:`y:=J_L^{1/\\mu}`
+			* *rL* --- a vector of corresponding values :math:`r_L(y)`
+		"""
+		Return = collections.namedtuple("Return", ["y", "rL"])
+
+		y = (J.to(self.un.dimensionless).magnitude) ** (1/mu) * self.un.dimensionless;
+
+		rL = polyval([gamma, beta, alpha], y); # ta funkcja uwzględnia jednostki
+
+		return Return(
+			y = y,
+			rL= rL,
+			);
+
+	@cached_property
+	def plot(self):
+		"""
+			Return a compatible :class:`Plotter` instance to perform plots.
+			Multiple uses results in the same instance being returned.
+		"""
+		return Plotter(un=self.un);
+
+	@cached_property
+	def print(self):
+		"""
+			Return a compatible :class:`PrintInfo` instance to display information.
+			Multiple uses results in the same instance being returned.
+		"""
+		return PrintInfo(un=self.un);
+
+	def remove_nonzero(self, x, y):
+		"""
+			Remove arguments and values for indices where the value is 0.
+
+			Parameters:
+
+			* *x* --- argument vector
+			* *y* --- value vector
+
+			Return: (*x*, *y*) with zero values removed
+		"""
+		assert x.shape == y.shape
+
+		nonzero_idcs = y.magnitude.nonzero();
+		return (x[nonzero_idcs], y[nonzero_idcs]);
 
 class Plotter(object):
 	"""
@@ -508,7 +551,7 @@ class Plotter(object):
 		plt.legend();
 		#plt.show();
 
-	def _mdlnJ_extras(self, y, mdlnJ, mu):
+	def _rL_extras(self, y, rL, mu):
 		"""
 			Labels, units and other details for negative logarithmic derivative of the normalized optical output plots.
 		"""
@@ -521,18 +564,18 @@ class Plotter(object):
 			plt.xlabel(f"$J^{{{1/mu}}}$ {y_units}");
 		else:
 			plt.xlabel(f"{y_units}");
-		plt.ylabel(f"-d log(J) / dt $\\left[{mdlnJ.units:~L}\\right]$");
+		plt.ylabel(f"-d log(J) / dt $\\left[{rL.units:~L}\\right]$");
 		plt.legend(loc="best");
 		#plt.show();
 
-	def mdlnJf(self, yf, mdlnJf, mu=None, fit_interval=None):
+	def rLf(self, yf, rLf, mu=None, fit_interval=None):
 		"""
-			Plot fitted negative logarithmic derivative of the normalized optical output *mdlnJs* versus chosen argument *ys*.
+			Plot fitted negative logarithmic derivative of the normalized optical output *rLs* versus chosen argument *ys*.
 			Generally *ys* should be :math:`J_L^{1/\\mu}`, so if a correct *mu* is provided, a proper x-axis label will be added. Parameter *mu* is not used otherwise.
 
 		"""
-		plt.plot(yf.magnitude , mdlnJf.magnitude, **self.style_fit);
-		self._mdlnJ_extras(yf, mdlnJf, mu);
+		plt.plot(yf.magnitude , rLf.magnitude, **self.style_fit);
+		self._rL_extras(yf, rLf, mu);
 
 		if(fit_interval is not None):
 			fit_interval = fit_interval.to(yf.units);
@@ -541,13 +584,13 @@ class Plotter(object):
 
 
 
-	def mdlnJs(self, ys, mdlnJs, mu=None):
+	def rLs(self, ys, rLs, mu=None):
 		"""
-			Plot (smoothed) negative logarithmic derivative of the normalized optical output *mdlnJs* versus chosen argument *ys*.
+			Plot (smoothed) negative logarithmic derivative of the normalized optical output *rLs* versus chosen argument *ys*.
 			Generally *ys* should be :math:`J_L^{1/\\mu}`, so if a correct *mu* is provided, 
 		"""
-		plt.plot(ys.magnitude , mdlnJs.magnitude, **self.style_smoothed);
-		self._mdlnJ_extras(ys, mdlnJs, mu);
+		plt.plot(ys.magnitude , rLs.magnitude, **self.style_smoothed);
+		self._rL_extras(ys, rLs, mu);
 
 	def rel_Je_vs_Js(self, te, Je, ts=None, Js=None, tf = None, Jf = None):
 		"""
@@ -611,7 +654,7 @@ class PrintInfo(object):
 
 	def poly_coefs(self, alpha, beta, gamma):
 		"""
-			Print polynomial coefficients for :math:`r_L(y) = \alpha + \beta y + \gamma y^2`
+			Print polynomial coefficients for :math:`r_L(y) = \\alpha + \\beta y + \\gamma y^2`
 		"""
 		display(Latex(f"$\\alpha={alpha:~Le}$"));
 		display(Latex(f"$\\beta={beta:~Le}$"));
@@ -831,16 +874,16 @@ def smoothing(
 
 		* *ts*  --- a vector of time steps for smoothed luminescence intensity
 		* *Jts* --- a vector of smoothed luminescence intensity
-		* *mdlnJts*  --- a vector of negative logarithmic derivative of luminescence intensity
+		* *rLts*  --- a vector of negative logarithmic derivative of luminescence intensity
 		* *te* --- a vector of experimental time steps
 		* *Je* --- a vector of corresponding experimental luminescence intensity with *Jodj* subtracted
 		* *Je* --- a vector of corresponding original experimental luminescence intensity
-		* *mdlnJe*  --- a vector of negative logarithmic derivative of luminescence intensity, computed directly from the experimental data
+		* *rLe*  --- a vector of negative logarithmic derivative of luminescence intensity, computed directly from the experimental data
 
 
 	"""
 
-	SmoothingReturn = collections.namedtuple("SmoothingReturn", ["ts", "Jts", "mdlnJts", "te", "Je", "mdlnJe", "Jo"])
+	SmoothingReturn = collections.namedtuple("SmoothingReturn", ["ts", "Jts", "rLts", "te", "Je", "rLe", "Jo"])
 
 	# we will work on copies
 	te = numpy.copy(te);
@@ -937,10 +980,10 @@ def smoothing(
 	return SmoothingReturn(
 		ts = ts,
 		Jts = Jts,
-		mdlnJts = -dlnJts,
+		rLts = -dlnJts,
 		te = te,
 		Je = Je,
-		mdlnJe = -dlnJe,
+		rLe = -dlnJe,
 		Jo = Jo,
 		);
 
@@ -1027,7 +1070,7 @@ def main():
 			);
 
 		if(args.savecsv is not None):
-			numpy.savetxt(args.savecsv, numpy.column_stack((ret.te, ret.Jo, ret.Je, ret.mdlnJe, ret.ts, ret.Jts, ret.mdlnJts)),
+			numpy.savetxt(args.savecsv, numpy.column_stack((ret.te, ret.Jo, ret.Je, ret.rLe, ret.ts, ret.Jts, ret.rLts)),
 				fmt='%15.7e',
 				delimiter=args.delimiter,
 				header=args.delimiter.join(('%15s'%s for s in ('te', 'Jo', 'Je', '-dlnJe', 'ts', 'Jts', '-dlnJts'))),
