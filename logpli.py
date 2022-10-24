@@ -45,6 +45,10 @@ class EstimateABC(object):
 		Estimate ABC constants.
 
 		The estimate is based on calculation of negative logarithmic derivative of luminescence intensity :math:`r_L:=-\\frac{d}{dt} \\log(J)` from experimental normalized luminescence intensity :math:`J`.
+
+		The following naming scheme is used for the variables within this class.
+		Prefixes *t*, *J* and *rL* correspond to time, normalized optical output and negative logarithmic derivative of luminescence intensity, respectively.
+		Then suffixes *e*, *s*, *f* correspond to experimental values, smoothed values and values obtained from polynomial fit of :math:`r_L`.
 		
 		Prameters:
 		* *un* --- a :class:`pint.UnitRegistry` instance
@@ -128,7 +132,7 @@ class EstimateABC(object):
 			Parameters:
 			
 			* *te*, *Je* --- experimental values to be fitted to
-			* *mu* --- argument power in :math:`y=J_L^{1/\\mu}`
+			* *mu* --- argument power in :math:`y=J^{1/\\mu}`
 			* *t0*, *t1* --- lower and upper boundary of interval; fitting interval beginning time must be within this interval
 			* *tstart* --- the result shall be pinned to the experimental value at this point (the point is arbitrary within the *te* range, i.e. it does not have to correspond to the actual value in *te*, but it must be within range covered by *te*)
 			* *init_alpha*,*init_beta*,*init_gamma* --- initial values of *alpha*, *beta* and *gamma*; if not set, already computed fit will be used; it shall be just float numbers (no units), as these parameters are dimensionless anyway
@@ -393,8 +397,8 @@ class EstimateABC(object):
 
 			Return:
 
-			* *ys* --- total range of :math:`J_L^{1/\\mu}` based on smoothed values
-			* *yf* --- range of :math:`J_L^{1/\\mu}` used in fitting procedure
+			* *ys* --- total range of :math:`J^{1/\\mu}` based on smoothed values
+			* *yf* --- range of :math:`J^{1/\\mu}` used in fitting procedure
 			* *fit_interval* --- used fitting interval; either as given or inferred by this procedure, with units
 			* *alpha*, *beta*, *gamma* --- polynomial coefficients of approximation of negative logarithmic derivative of luminescence intensity :math:`r_L(y) \\approx \\alpha + \\beta y + \\gamma y^2`
 			* *mu* --- *mu* used in fitting procedure
@@ -436,17 +440,17 @@ class EstimateABC(object):
 
 	def rL_from_coefs(self, J, alpha, beta, gamma, mu):
 		"""
-			This function calculates the polynomial approximation of :math:`r_L (J_L^{1/\\mu})` as :math:`r_L(y) \\approx \\alpha + \\beta y + \\gamma y^2` for :math:`y:=J_L^{1/\\mu}`.
+			This function calculates the polynomial approximation of :math:`r_L (J^{1/\\mu})` as :math:`r_L(y) \\approx \\alpha + \\beta y + \\gamma y^2` for :math:`y:=J^{1/\\mu}`.
 
 			Parameters:
 
 			* *J* --- a vector of luminescence intensity (any value range, may be unrelated to experimental/smoothed/fitted values)
 			* *alpha*, *beta*, *gamma* --- polynomial coefficients
-			* *mu* --- parameter in argument :math:`y:=J_L^{1/\\mu}`
+			* *mu* --- parameter in argument :math:`y:=J^{1/\\mu}`
 
 			Return: a named tuple
 
-			* *y* --- a vector of values :math:`y:=J_L^{1/\\mu}`
+			* *y* --- a vector of values :math:`y:=J^{1/\\mu}`
 			* *rL* --- a vector of corresponding values :math:`r_L(y)`
 		"""
 		Return = collections.namedtuple("Return", ["y", "rL"])
@@ -571,7 +575,7 @@ class Plotter(object):
 	def rLf(self, yf, rLf, mu=None, fit_interval=None):
 		"""
 			Plot fitted negative logarithmic derivative of the normalized optical output *rLs* versus chosen argument *ys*.
-			Generally *ys* should be :math:`J_L^{1/\\mu}`, so if a correct *mu* is provided, a proper x-axis label will be added. Parameter *mu* is not used otherwise.
+			Generally *ys* should be :math:`J^{1/\\mu}`, so if a correct *mu* is provided, a proper x-axis label will be added. Parameter *mu* is not used otherwise.
 
 		"""
 		plt.plot(yf.magnitude , rLf.magnitude, **self.style_fit);
@@ -587,7 +591,7 @@ class Plotter(object):
 	def rLs(self, ys, rLs, mu=None):
 		"""
 			Plot (smoothed) negative logarithmic derivative of the normalized optical output *rLs* versus chosen argument *ys*.
-			Generally *ys* should be :math:`J_L^{1/\\mu}`, so if a correct *mu* is provided, 
+			Generally *ys* should be :math:`J^{1/\\mu}`, so if a correct *mu* is provided, 
 		"""
 		plt.plot(ys.magnitude , rLs.magnitude, **self.style_smoothed);
 		self._rL_extras(ys, rLs, mu);
