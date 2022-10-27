@@ -104,6 +104,61 @@ class EstimateABC(object):
 			gamma=gamma,
 			);
 
+	def _smoothing_iteration(self, te, Je, tradius, radius, nonlinear=False):
+		"""
+			Helper function for one iteration of smoothing, as described in :func:`self.J_smooth`. It operates on vectors with no units.
+		"""
+
+
+		assert min(radius) >= 1, "Smoothing radius cannot be lower than one"
+		assert len(te) == len(Je)
+		assert len(tradius) == len(radius) >= 1
+
+		f_radius = scipy.interpolate.interp1d(tradius, radius, kind="linear", bounds_error=False, fill_value=(tradius[0], tradius[-1]) );
+
+		st = 1; # subinterval interpolation degree; cannot be less than 1; higher than 1 seems to be less accurate
+
+		dlnJts = [];
+		dJts = [];
+		Jts = [];
+		ts = [];
+		for i in range(len(Je)):
+			#fac = min(1, float(i) / (len(Je) - endr))
+			#prom =  int(initr*(1-fac) + endr*fac);
+			prom = int(f_radius(te[i]));
+
+			zakr, poz = zakres(i, prom, len(Je)); 
+
+			assert(i == zakr[poz]);
+
+			tt = te[zakr];
+
+			if(nonlinear):
+				_,c0 = lznk_fit(tt, numpy.log(Je[zakr]), st=st);
+				Jt,_ = lznk_exp_fit(tt, Je[zakr], c0=c0, st=st);
+				dJt = numpy.gradient(Jt,tt);
+				dlnJt = dJt/Jt;
+			else:
+				lnJt,_ = lznk_fit(tt, numpy.log(Je[zakr]), st=st);
+				dlnJt = numpy.gradient(lnJt,tt);
+				Jt = numpy.exp(lnJt);
+				dJt = numpy.gradient(Jt,tt);
+			
+			ts.append(te[i]);
+			Jts.append(Jt[poz]);
+			dlnJts.append(dlnJt[poz]);
+			if(i<len(Je)-1):
+				dJts.append((Jt[poz+1]-Jt[poz])/(tt[poz+1]-tt[poz]));
+			else:
+				dJts.append(dJts[-1]);
+
+		dlnJts = numpy.array(dlnJts);
+		dJts = numpy.array(dJts);
+		Jts = numpy.array(Jts);
+		ts = numpy.array(ts);
+
+		return (ts, Jts, dlnJts);
+
 
 	def abc_from_coefs(self, alpha, beta, gamma, mu, n0):
 		"""
@@ -424,25 +479,22 @@ class EstimateABC(object):
 		idcs = (y>0);
 		return (x[idcs], y[idcs]);
 
-	def J_smooth(self, te, Je, **smoothing_kwargs):
+	def J_smooth(self, te, Je,
+		tradius, radius,
+		iters=1,
+		nonlinear=False,
+		):
 		"""
-			Smooth experimental data.
+			Smooth experimental data. Smoothing relies on local least-squares fit of the given function for points within certain radius (measured in number of points, not in argument units). Then, 1st order fitting polynomial is found and its value and derivative for the given point is taken as a smoothed value for the original function. The radius, which must be at least one, may be specified for arbitrary time (*tradius*); it will be then linearly interpolated to other arguments.
 
 			Parameters:
 
 			* *te* --- time (with units)
 			* *Je* --- (noisy) data to be de-noised (with units)
-			* *Jodj* --- value to be subtracted from Je (with units); by default 0, may be done separately
-			* *st* --- polynomial degree for least-squares fitting
-			* *n0* --- initial averaging interval
-			* *n1* --- final averaging interval
-			* *iters* --- multiple iterations of the averaging
-			* *nielinznk* --- use nonlinear least squares (default is to use linear)
-			* *gaussian* --- use Gaussian filtering (default: no)
-			* *verbose* --- show text
-			* *plots* --- show plots
-			* *title* --- title of produced figures
-			* *tpoint* --- auxiliary indicatory point to be put on the figures (default: *None*, no point)
+			* *tradius* --- time for smoothing radius specification (with units)
+			* *radius* --- smoothing radii corresponding to *tradius* vector (integer, without units) 
+			* *iters* --- number of smoothing iterations
+			* *nonlinear* --- use nonlinear least squares (default is to use linear)
 
 			Return: a named tuple (*ts*, *Jts*, *RLs*) 
 
@@ -453,18 +505,31 @@ class EstimateABC(object):
 
 		Return = collections.namedtuple("Return", ["ts", "Js", "RLs"])
 
-		ret = smoothing(
-			te = te.magnitude,
-			Je = Je.magnitude,
-			Jodj = 0.0,
-			averageoutfirst=False,
-			**smoothing_kwargs
-			);
+		assert iters >= 1
+
+		# we will work on copies
+		te2 = numpy.copy(te.magnitude);
+		Je2 = numpy.copy(Je.magnitude);
+
+
+
+		for iter in range(iters):
+			if(iter==0):
+				tin = te2;
+				Jin = Je2;
+			else:
+				tin = ts;
+				Jin = Js;
+
+
+			(ts, Js, dlnJs) = self._smoothing_iteration(tin, Jin, tradius=tradius.to(te.units).magnitude, radius=radius, nonlinear=nonlinear);
+
 
 		return Return(
-			ts = ret.ts * te.units,
-			Js = ret.Jts * Je.units, 
-			RLs = ret.RLts / te.units); 
+			ts = ts * te.units,
+			Js = Js * Je.units, 
+			RLs = -dlnJs / te.units); 
+
 
 	def J_tail(self, t, J, tmin):
 		"""
@@ -604,6 +669,18 @@ class EstimateABC(object):
 		nonzero_idcs = y.magnitude.nonzero();
 		return (x[nonzero_idcs], y[nonzero_idcs]);
 
+	def smooth_radius(self, te, n0, n1):
+		"""
+			Simple smoothing radius with *n0* radius for left *te* boundary and *n1* radius for right *te* boundary. 
+			Return value may be used as a dictionary argument in func:`self.J_smooth` function.
+
+			Return: a dictionary with two keys:
+
+			* *tradius* --- time vector
+			* *radius* --- corresponding radii
+		"""
+		return {"tradius":numpy.array([min(te.magnitude), max(te.magnitude)])*te.units, "radius":[n0, n1]};
+
 class Plotter(object):
 	"""
 		A class for some standard auxiliary plots.
@@ -730,11 +807,11 @@ class Plotter(object):
 
 		if(ts is not None):
 			f_Js = scipy.interpolate.interp1d(ts, Js, kind="linear");
-			plt.plot(te, (Je - f_Js(te)) / Je, label="(orig. - smooth.) / orig.", color=self.style_smoothed["color"]);
+			plt.plot(te, (Je - f_Js(te)) / Je, label="(orig. - smooth.) / orig.", color=self.style_smoothed["color"], ls='None', marker=".", ms=8);
 
 		if(tf is not None):
 			f_Jf = scipy.interpolate.interp1d(tf, Jf, kind="linear");
-			plt.plot(te, (Je - f_Jf(te)) / Je, label="(orig. - fit) / orig.", color=self.style_fit["color"]);
+			plt.plot(te, (Je - f_Jf(te)) / Je, label="(orig. - fit) / orig.", color=self.style_fit["color"], ls='None', marker=".", ms=8);
 		
 		plt.plot(te, 0*te, **self.style_data);
 		plt.yscale("linear");
@@ -956,7 +1033,6 @@ def smoothing(
 	Jodj=None,
 	nielinznk=False,
 	gaussian=False,
-	averageoutfirst=False,
 	verbose=False,
 	plots=False,
 	title = "",
@@ -976,7 +1052,6 @@ def smoothing(
 		* *Jodj* --- constant subtracted from the experimental J data (default: *None*, find automatically)
 		* *nielinznk* --- use nonlinear least squares (default is to use linear)
 		* *gaussian* --- use Gaussian filtering (default: no)
-		* *averageoutfirst* --- first average out J, then subtract Jodj (default is to subtract Jodj from J and then to average out)
 		* *verbose* --- show text
 		* *plots* --- show plots
 		* *title* --- title of produced figures
@@ -1028,19 +1103,13 @@ def smoothing(
 	for iter in range(iters):
 		if(iter==0):
 			tin = te;
-			if(averageoutfirst):
-				Jin = Jo;
-			else:
-				Jin = Je;
+			Jin = Je;
 		else:
 			tin = ts;
 			Jin = Jts;
 
 
 		(ts, Jts, dlnJts, _) = new_approx(tin, Jin, n0, n1, st=st, nielinznk=nielinznk, gaussian=gaussian);
-
-	if(averageoutfirst):
-		Jts -= Jodj;
 
 	if(tpoint is not None):
 		point = (numpy.abs(ts-tpoint)).argmin();
@@ -1119,7 +1188,7 @@ def main():
 	parser.add_argument('--st', type=int, default=1, help='Polynomial degree for least-squares fitting')
 	parser.add_argument('--nielinznk', action='store_true', default=False, help='Use nonlinear least squares (default is to use linear)')
 	parser.add_argument('--gaussian', action='store_true', default=False, help='Use Gaussian filtering (default: no)')
-	parser.add_argument('--averageoutfirst', action='store_true', default=False, help='First average out J, then subtract Jodj (default is to subtract Jodj from J and then to average out)')
+	#parser.add_argument('--averageoutfirst', action='store_true', default=False, help='First average out J, then subtract Jodj (default is to subtract Jodj from J and then to average out)') # this leads to error in logarithmic derivative
 	parser.add_argument('--noplots', action='store_true', default=False, help='Suppress plots')
 	parser.add_argument('--ignorezeros', action='store_true', default=False, help='Ignore measurements which were equal to 0')
 	args = parser.parse_args()
@@ -1174,7 +1243,6 @@ def main():
 			Jodj = args.Jodj,
 			nielinznk = args.nielinznk,
 			gaussian = args.gaussian,
-			averageoutfirst = args.averageoutfirst,
 			verbose = True,
 			plots = plots,
 			title = title,
