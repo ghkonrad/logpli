@@ -64,6 +64,9 @@ class EstimateABC(object):
 
 			Return: (x,y) with arguments in [*x_min*, *x_max*].
 		"""
+
+		assert(len(x) == len(y));
+
 		if(x_min is None):
 			x_min = min(x);
 		if(x_max is None):
@@ -114,7 +117,7 @@ class EstimateABC(object):
 		assert len(te) == len(Je)
 		assert len(tradius) == len(radius) >= 1
 
-		f_radius = scipy.interpolate.interp1d(tradius, radius, kind="linear", bounds_error=False, fill_value=(tradius[0], tradius[-1]) );
+		f_radius = scipy.interpolate.interp1d(tradius, radius, kind="linear", bounds_error=False, fill_value=(radius[0], radius[-1]) );
 
 		st = 1; # subinterval interpolation degree; cannot be less than 1; higher than 1 seems to be less accurate
 
@@ -157,7 +160,7 @@ class EstimateABC(object):
 		Jts = numpy.array(Jts);
 		ts = numpy.array(ts);
 
-		return (ts, Jts, dlnJts);
+		return (ts, Jts, dlnJts, dJts);
 
 
 	def abc_from_coefs(self, alpha, beta, gamma, mu, n0):
@@ -183,7 +186,7 @@ class EstimateABC(object):
 			C = (gamma/(mu * n0**2)).to(un.cm**6/un.s),
 			);
 
-	def J_fit(self, te, Je, mu, t0, t1, tstart, init_alpha = None, init_beta = None, init_gamma = None, alpha = None, beta = None, gamma = None, minimize_method = "CG", log = False, **minimize_options_kwargs):
+	def J_fit(self, te, Je, mu, t0, t1, tstart, init_alpha = None, init_beta = None, init_gamma = None, alpha = None, beta = None, gamma = None, minimize_method = "CG", log = False, wfun = None, **minimize_options_kwargs):
 		r"""
 			This function improves optical output *Jfit* based on assumptions that the (negative)logarithmic derivative of *J* is given by polynomial
 			:math:`r_L(y) = \alpha + \beta y + \gamma y^2`
@@ -201,6 +204,7 @@ class EstimateABC(object):
 			* *minimize_method* --- minimalization method accepted by :func:`scipy.optimize.minimize`
 			* *minimize_options_kwards* --- anything else will be passed as named arguments to :func:`scipy.optimize.fmin_cg`
 			* *log* --- operate on logarithms of parameters instead of parameters themselves (default: false); the parameters shall not be converted to logarithms manually, this procedure takes care of that transparently, they just have to be positive
+			* *wfun* --- weight (dimensionless) to improve optimization; this should be a function with time as an argument, likely from :func:`self.interp`, or *None* for no weight
 
 			Result: a named tuple
 
@@ -210,7 +214,8 @@ class EstimateABC(object):
 			* *init_val* --- initial relative error value
 			* *final_val* --- final relative error value
 		"""
-		
+		assert len(te)==len(Je)
+
 		assert min(te) <= tstart <= max(te), "Starting value *tstart* must be within range of experimamental values *te* "
 
 		Return = collections.namedtuple("Return", ["alpha", "beta", "gamma", "mu", "tstart", "Jstart", "init_val", "final_val"])
@@ -238,6 +243,11 @@ class EstimateABC(object):
 
 		tf = te[rngf]; # for these times we do the fitting
 		Jf = Je[rngf];
+
+		if(wfun is not None):
+			wf = wfun(tf);
+		else:
+			wf = 1;
 
 		def params2x(**kwargs):
 			x = [];
@@ -275,7 +285,7 @@ class EstimateABC(object):
 				mu=mu,
 				**x2params(x),
 				);
-			return numpy.linalg.norm(((Jf - Jfit) / Jf).to(un.dimensionless).magnitude);
+			return numpy.linalg.norm((wf * (Jf - Jfit) / Jf).to(un.dimensionless).magnitude);
 
 
 		if(init_alpha is None):
@@ -501,9 +511,10 @@ class EstimateABC(object):
 			* *ts*  --- a vector of time steps for smoothed luminescence intensity
 			* *Js* --- a vector of smoothed luminescence intensity
 			* *RLs*  --- a vector of negative logarithmic derivative of luminescence intensity
+			* *dJs* --- a vector of derivative of smoothed luminescence intensity
 		"""
 
-		Return = collections.namedtuple("Return", ["ts", "Js", "RLs"])
+		Return = collections.namedtuple("Return", ["ts", "Js", "RLs", "dJs"])
 
 		assert iters >= 1
 
@@ -522,13 +533,15 @@ class EstimateABC(object):
 				Jin = Js;
 
 
-			(ts, Js, dlnJs) = self._smoothing_iteration(tin, Jin, tradius=tradius.to(te.units).magnitude, radius=radius, nonlinear=nonlinear);
+			(ts, Js, dlnJs, dJs) = self._smoothing_iteration(tin, Jin, tradius=tradius.to(te.units).magnitude, radius=radius, nonlinear=nonlinear);
 
 
 		return Return(
 			ts = ts * te.units,
 			Js = Js * Je.units, 
-			RLs = -dlnJs / te.units); 
+			RLs = -dlnJs / te.units,
+			dJs = dJs / te.units,
+			); 
 
 
 	def J_tail(self, t, J, tmin):
@@ -557,7 +570,55 @@ class EstimateABC(object):
 
 		return Jodj;
 
-	def RL_fit_poly(self, ts, Js, RLs, mu, fit_interval=None):
+	def interp(self, xi2yi):
+		"""
+			This function returns linear interpolant for values of *xi2yi*.
+			Keys/values of *xi2yi* may have units (compatible with each other within arguments/values).
+			Returned function accepts only arguments with units.
+		"""
+		assert len(xi2yi)>0
+		un = self.un;
+
+		xiyi=next(iter(xi2yi.items())); # get any item
+		if(hasattr(xiyi[0], "units")):
+			x_units = xiyi[0].units
+		else:
+			x_units = un.dimensionless;
+
+		if(hasattr(xiyi[1], "units")):
+			y_units = xiyi[1].units
+		else:
+			y_units = un.dimensionless;
+
+		xi = numpy.zeros(len(xi2yi))*x_units;
+		yi = numpy.zeros(len(xi2yi))*y_units;
+
+		for i, (xx, yy) in enumerate(xi2yi.items()):
+			xi[i] = xx;
+			yi[i] = yy;
+
+		sorti = xi.argsort();
+
+		xi = xi[sorti];
+		yi = yi[sorti];
+
+		_f = scipy.interpolate.interp1d(xi.magnitude, yi.magnitude, kind="linear", bounds_error = False, fill_value=(yi.magnitude[0], yi.magnitude[-1]));
+		f = lambda _x: _f(_x.to(x_units).magnitude) * y_units;
+		return f;
+
+
+	def limit_t(self, t, *Jargs, tmin, tmax):
+		"""
+			Limit any number of data *Jargs*) to a given time interval [*tmin*, *tmax*] based on argument *t*.
+			Parameters *tmin*, *tmax* may be *None* (no limit);
+
+			Return: a tuple (*t*, *Jargs[0]*, *Jargs[1]*, ...) of data trimmed to given interval.
+		"""
+		(tl, _) = self._limit_args(t, t, tmin, tmax);
+
+		return (tl,)+tuple(self._limit_args(t, Jarg, tmin, tmax)[1] for Jarg in Jargs);
+
+	def RL_fit_poly(self, ts, Js, RLs, mu, fit_interval=None, wfun=None):
 		"""
 			Polynomial approximation of negative logarithmic derivative of luminescence intensity.
 
@@ -567,6 +628,7 @@ class EstimateABC(object):
 			* *Js* --- a vector of smoothed luminescence intensity
 			* *RLs*  --- a vector of negative logarithmic derivative of luminescence intensity
 			* *mu* --- degree of the fitting polynomial
+			* *wfun* --- weight (dimensionless) to improve optimization; this should be a function with :math:`y=J^{1/\\mu}` as an argument, likely from :func:`self.interp`, or *None* for no weight
 
 			Return:
 
@@ -592,8 +654,13 @@ class EstimateABC(object):
 			fit_interval = fit_interval.to(ys.units).magnitude;
 		
 		yf = numpy.linspace(*fit_interval, 100);
+
+		if(wfun is not None):
+			wf = wfun(yf*un.dimensionless).to(un.dimensionless).magnitude;
+		else:
+			wf = None;
 		
-		polycoefs=numpy.polyfit(yf, f_RLs(yf), deg=2);
+		polycoefs=numpy.polyfit(yf, f_RLs(yf), deg=2, w=wf);
 
 		p_RLf=[p*RLs.units / (ys.units**(len(polycoefs)-i-1)) for i,p in enumerate(polycoefs)]
 
@@ -610,6 +677,17 @@ class EstimateABC(object):
 			);
 
 		return ret;
+
+	def RL_from_J(self, t, J):
+		"""
+			This function calculates negative logarithmic derivative of the normalized optical output :math:`r_L` directly by (approximated) derivation of the given normalized optical output *J*. Time *t* is also necessary.
+
+			Return: vector of :math:`r_L` values (versus given time *t*)
+		"""
+		dJ = numpy.gradient(J, t);
+		RL = -dJ/J;
+
+		return RL;
 
 	def RL_from_coefs(self, J, alpha, beta, gamma, mu):
 		"""
@@ -806,11 +884,11 @@ class Plotter(object):
 			Jf = Jf.magnitude;
 
 		if(ts is not None):
-			f_Js = scipy.interpolate.interp1d(ts, Js, kind="linear");
+			f_Js = scipy.interpolate.interp1d(ts, Js, kind="linear", bounds_error=False, fill_value = 0.);
 			plt.plot(te, (Je - f_Js(te)) / Je, label="(orig. - smooth.) / orig.", color=self.style_smoothed["color"], ls='None', marker=".", ms=8);
 
 		if(tf is not None):
-			f_Jf = scipy.interpolate.interp1d(tf, Jf, kind="linear");
+			f_Jf = scipy.interpolate.interp1d(tf, Jf, kind="linear", bounds_error=False, fill_value = 0.);
 			plt.plot(te, (Je - f_Jf(te)) / Je, label="(orig. - fit) / orig.", color=self.style_fit["color"], ls='None', marker=".", ms=8);
 		
 		plt.plot(te, 0*te, **self.style_data);
