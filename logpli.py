@@ -833,6 +833,13 @@ class Plotter(object):
 			plt.xlabel(f"{y_units}");
 		plt.ylabel(f"-d log(J) / dt $\\left[{RL.units:~L}\\right]$");
 		plt.legend(loc="best");
+
+		if(mu != 1):
+			ax = plt.gca();
+			if(len(ax.get_shared_x_axes().get_siblings(ax))==1): # This is to prevent multiple creation of second axis --- it then shows incorrect values
+				ax2 = ax.secondary_xaxis('top', functions=(lambda Jpmu: Jpmu**mu, lambda J: J**(1/mu)))
+				ax2.set_xlabel('$J$')
+				plt.xlim([0.0, None]) # left x limit cannot be negative; if so, the upper scale is incorrect
 		#plt.show();
 
 	def RLf(self, yf, RLf, mu=None, fit_interval=None):
@@ -858,6 +865,22 @@ class Plotter(object):
 		"""
 		plt.plot(ys.magnitude , RLs.magnitude, **self.style_smoothed);
 		self._RL_extras(ys, RLs, mu);
+
+	def RLsRLf(self, ys, RLs, yf, RLf, mu=None, fit_interval=None):
+		"""
+			Plot fitted negative logarithmic derivative of the normalized optical output *RLs* versus chosen argument *ys*.
+			Generally *ys* should be :math:`J^{1/\\mu}`, so if a correct *mu* is provided, a proper x-axis label will be added. Parameter *mu* is not used otherwise.
+
+		"""
+		plt.plot(ys.magnitude , RLs.magnitude, **self.style_smoothed);
+		plt.plot(yf.to(ys.units).magnitude , RLf.to(RLs.units).magnitude, **self.style_fit);
+
+		self._RL_extras(ys, RLs, mu);
+
+		if(fit_interval is not None):
+			fit_interval = fit_interval.to(yf.units);
+			plt.axvline(x = fit_interval[0].magnitude, color=self.style_fit["color"], ls="--", lw=2) # granica fitowania
+			plt.axvline(x = fit_interval[1].magnitude, color=self.style_fit["color"], ls="--", lw=2) # granica fitowania
 
 	def rel_Je_vs_Js(self, te, Je, ts=None, Js=None, tf = None, Jf = None):
 		"""
