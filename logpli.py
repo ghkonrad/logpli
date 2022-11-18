@@ -72,9 +72,19 @@ class EstimateABC(object):
 		if(x_max is None):
 			x_max = max(x);
 
-		indices = numpy.where(numpy.logical_and(x >= x_min, x <= x_max));
+		indices = self._limit_args_indices(x, x_min, x_max);
 
 		return (x[indices], y[indices]);
+
+	def _limit_args_indices(self, x, x_min, x_max):
+		"""
+			This function returns indices for vector *x*, which will limit vector *x* to interval [*x_min*, *x_max*].
+			Values *x_min*, *x_max* may be *None*, coresponding limits are ignored.
+
+			Return: list of indices.
+		"""
+		return numpy.where(numpy.logical_and(x >= x_min, x <= x_max));
+
 
 	def _poly_coefs(self, p_RLs):
 		"""
@@ -570,6 +580,111 @@ class EstimateABC(object):
 
 		return Jodj;
 
+	def J_tail_replace(self, ts, Js, dJs, tmin, tswitch=None):
+		"""
+			The purpose of this function is to cope with tail of the smoothed result, which is often affected by a noise level, acting as a constant added to the original signal.
+			It may be used for the smoothed data.
+
+			This function assumes that a function asymptotically behaves as
+			:math:`exp(c_0 t + c_1)`
+			while due to noise it is in fact
+			:math:`exp(c_0 t + c_1) + c_2`.
+
+			The value :math:`c_2` is estimated.
+			It is then subtracted from the original data to recover exponential decay pattern.
+			Since this procedure often leads to negative values, as ultimately the exponential value is too small to be recovered from the noise, the *J* values for :math:`t >= t_{switch}` are replaced with obtained fit :math:`exp(c_0 t + c_1)`.
+			Due to this switch, the derivative is also altered. It must be noted that the derivative may be inaccurate in a :math:`t_{switch}` point after this procedure.
+
+			If :math:`t_{switch}` point is not given, is will be determined so that this will be a first point after :math:`t_{min}` so that the difference between :math:`r_L` before modification and calculated from fit changes signs.
+
+			Parameters:
+
+			* *ts*, *Js*, *dJs* --- smoothed values, time and normalized optical output and its derivative
+			* *tmin* --- start of the estimation range; if the last exponential pattern is visible, this shall correspond roughly to beginning of this part; it should be more than only the final constant part
+			* *tswitch* --- time where fit shall replace original values; if not given, it will be determined by this procedure
+
+			Return: a named tuple:
+
+			* *Jr*, *dJr* --- altered *J*, *dJ* values
+			* *J_tail* --- value subtracted from *J*
+			* *tswitch* --- point :math:`t_{switch}`, from where the fit replaces original values; either as given or determined by this procedure
+		"""
+		Return = collections.namedtuple("Return", ["Jr", "dJr", "J_tail", "tswitch"])
+
+		indices = self._limit_args_indices(ts, tmin, max(ts));
+
+		tl = ts[indices];
+		Jl = Js[indices];
+		dJl = dJs[indices];
+		
+		(Jodjfit,c) = exp_plus_c_fit(tl.magnitude, Jl.magnitude, [0,0,0]);
+		Jodj = c[2] * Jl.units;
+		
+		Jfit = exp_plus_c_fun(tl.magnitude, c0=c[0], c1=c[1], c2=0) * Jl.units;
+		dJfit = c[0] / tl.units * Jfit;
+
+		##
+
+		if(tswitch is None):
+			RLl = -dJl / (Jl - Jodj);
+			RLfit = -dJfit / Jfit;
+
+			tmp1 = numpy.sign((RLfit - RLl).magnitude);
+			#print(tmp1);
+			idx = numpy.nonzero((numpy.roll(tmp1, -1) - tmp1))[0][0];
+
+			#idx = numpy.argmin(numpy.abs(RLfit - RLl));
+			
+			tswitch = tl[idx];
+
+		#print(tswitch);
+
+		indices2 = self._limit_args_indices(ts, tswitch, max(ts));
+		indices3 = self._limit_args_indices(tl, tswitch, max(ts));
+
+		Jr = Js - Jodj;
+		Jr[indices2] = Jfit[indices3];
+
+		dJr = dJs.copy();
+		dJr[indices2] = dJfit[indices3];
+
+		##
+
+		#clip = numpy.clip((tl - tmin) / (tswitch - tmin), 0, 1);
+
+		#Jr = J - Jodj;
+		#Jr[indices] = Jfit * clip + Jr[indices] * (1-clip);
+
+		#dJr = dJ.copy();
+		#dJr[indices] = dJfit * clip + dJ[indices] * (1-clip);
+
+		##
+
+		#Jr = J - Jodj;
+		#Jr[indices] = Jfit;
+
+		#dJr = dJ.copy();
+		#dJr[indices] = dJfit;
+
+		##
+
+		#indices2 = self._limit_args_indices(t, tswitch, max(t));
+		#indices3 = self._limit_args_indices(tl, tswitch, max(t));
+
+		#Jr = J - Jodj;
+		#Jr[indices2] = Jfit[indices3];
+
+		#dJr = dJ.copy();
+		#dJr[indices2] = dJfit[indices3];
+
+		ret = Return(
+			Jr = Jr,
+			dJr = dJr,
+			J_tail = Jodj,
+			tswitch = tswitch
+			);
+		return ret;
+
 	def interp(self, xi2yi):
 		"""
 			This function returns linear interpolant for values of *xi2yi*.
@@ -951,9 +1066,15 @@ class PrintInfo(object):
 		display(Latex(f"$\\gamma={gamma:~Le}$"));
 
 
+def exp_plus_c_fun(x, c0, c1, c2):
+	"""
+		This represents function: :math:`\\exp(c_0 * + c_1) + c_2
+	"""
+	return (numpy.exp(c0 * x + c1) + c2);
+
 def exp_plus_c_fit(x, fx, c0):
 	def fun(c, x, y):
-		return (numpy.exp(c[0] * x + c[1]) + c[2]) - y;
+		return exp_plus_c_fun(x, *c) - y;
 
 	res = scipy.optimize.least_squares(fun, c0, args=(x,fx))
 	c = res.x;
