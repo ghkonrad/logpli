@@ -846,7 +846,7 @@ class EstimateABC(object):
 		"""
 		return PrintInfo(un=self.un);
 
-	def remove_nonzero(self, x, y):
+	def remove_zero(self, x, y):
 		"""
 			Remove arguments and values for indices where the value is 0.
 
@@ -883,6 +883,8 @@ class Plotter(object):
 		self.style_smoothed = {'color':'#E07E1F', 'label':'smooth.'};
 		self.style_fit = {'color':'#1FE07E', 'label':'fit'};
 		self.style_fit_outside_interval = {'color':'#1FE07E', "ls":"--"}; # approximation outside of fitting interval
+		self.style_fit1 = {'color':'#225BAC', 'label':'fit 1', 'lw':3};
+		self.style_fit2 = {'color':'#1B4815', 'label':'fit 2', 'lw':3};
 
 		self.un=un;
 
@@ -949,7 +951,7 @@ class Plotter(object):
 		plt.ylabel(f"-d log(J) / dt $\\left[{RL.units:~L}\\right]$");
 		plt.legend(loc="best");
 
-		if(mu != 1):
+		if(mu is not None) and (mu != 1):
 			ax = plt.gca();
 			if(len(ax.get_shared_x_axes().get_siblings(ax))==1): # This is to prevent multiple creation of second axis --- it then shows incorrect values
 				ax2 = ax.secondary_xaxis('top', functions=(lambda Jpmu: Jpmu**mu, lambda J: J**(1/mu)))
@@ -996,6 +998,21 @@ class Plotter(object):
 			fit_interval = fit_interval.to(yf.units);
 			plt.axvline(x = fit_interval[0].magnitude, color=self.style_fit["color"], ls="--", lw=2) # granica fitowania
 			plt.axvline(x = fit_interval[1].magnitude, color=self.style_fit["color"], ls="--", lw=2) # granica fitowania
+
+	def RLsRLf2(self, ys, RLs, yf1, RLf1, yf2, RLf2, mu=None):
+		"""
+			Plot fitted negative logarithmic derivative of the normalized optical output *RLs* versus chosen argument *ys*.
+			Generally *ys* should be :math:`J^{1/\\mu}`, so if a correct *mu* is provided, a proper x-axis label will be added. Parameter *mu* is not used otherwise.
+
+			Two fits *yf1*, *RLf1* and *yf2*, *RLf2* may be provided, correponding to mono- and bi-molecular recombination regimes. Regardless, *yf1* and *yf2* shall both correspond to :math:`J^{1/\\mu}` for *mu* given as a parameter (not as *mu* parameter used for fitting in this particular fit) .
+
+		"""
+		plt.plot(ys.magnitude , RLs.magnitude, lw=4, **self.style_smoothed);
+		plt.plot(yf1.to(ys.units).magnitude, RLf1.to(RLs.units).magnitude, **self.style_fit1);
+		plt.plot(yf2.to(ys.units).magnitude, RLf2.to(RLs.units).magnitude, **self.style_fit2);
+
+		self._RL_extras(ys, RLs, mu);
+
 
 	def rel_Je_vs_Js(self, te, Je, ts=None, Js=None, tf = None, Jf = None):
 		"""
