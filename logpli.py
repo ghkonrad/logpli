@@ -733,6 +733,314 @@ class EstimateABC(object):
 
 		return (tl,)+tuple(self._limit_args(t, Jarg, tmin, tmax)[1] for Jarg in Jargs);
 
+# To jest do przeniesienia do biblioteki logpli po przetestowaniu
+	def RL_fit(J, RL, pull=0, continuous=0, increase_rel=0.0, PJ1=None, PJ2=None, expfit=True):
+		"""
+			Piecewise-polynomial approximation of negative logarithmic derivative of luminescence intensity, accounting for mono-molecular and bi-molecular radiative recombination.
+
+			This algorithm is supposed to find coefficients to approximate a negative logarithmic derivative of luminescence intensity *RL* by two functions:
+
+			* mono-molecular radiative recombination: :math:`r_L(y) \\approx \\alpha_2 + \\beta J + \\gamma J^2`
+			* bi-molecular radiative recombination: :math:`r_L(y) \\approx \\alpha_1 + \\beta_1 \\sqrt{J} + \\gamma_1 J`
+
+			The span of normalized luminescence intensity *J* is divided into three intervals:
+			(*PJ0*, *PJ1*), 
+			(*PJ1*, *PJ2*) and 
+			(*PJ2*, *PJ3*),
+			where *PJ0* and *PJ3* are the minimum and maximum of *J* values.
+			In the interval (*PJ0*, *PJ1*), the liminescence is the smallest, so mono-molecular approximation is used there.
+			Then, in the interval (*PJ1*, *PJ2*), the luminescence is high and bi-molecular approximation is used.
+			In (*PJ2*, *PJ3*), the excitation residual effects are assumed to dominate, so the ABC model is not applied there and no approximation for this interval is provided.
+
+			This function estimates the coefficients of mono- and bi-molecular approximations as well as the division points *PJ1*, *PJ2*.
+			These points may also be provided, then only the approximations' coefficients are calculated.
+
+			For determination of *PJ1* and *PJ2*, heuristic algoriyhm is used.
+			This algorithm tries to minimize error of the approximation by apropriate placement of *PJ1* and *PJ2*. However, some penalty is placed onto the excluded interval length (*PJ2*, *PJ3*), so that the possibly small interval is not accounted for by any approximation.
+			If the excluded interval is not satisfactory, user may adjust it by change in the *pull* parameter.
+			Positive *pull* value causes the excluded interval to be smaller while negative values make it bigger.
+
+			* *alpha*, *beta*, *gamma* --- polynomial coefficients of approximation of negative logarithmic derivative of luminescence intensity :math:`r_L(y) \\approx \\alpha + \\beta y + \\gamma y^2`
+
+
+			Parameters:
+
+			* *ts*  --- a vector of time steps for smoothed luminescence intensity
+			* *Js* --- a vector of smoothed luminescence intensity
+			* *RLs*  --- a vector of negative logarithmic derivative of luminescence intensity
+			* *mu* --- degree of the fitting polynomial
+			* *wfun* --- weight (dimensionless) to improve optimization; this should be a function with :math:`y=J^{1/\\mu}` as an argument, likely from :func:`self.interp`, or *None* for no weight
+
+			Return:
+
+			* *ys* --- total range of :math:`J^{1/\\mu}` based on smoothed values
+			* *yf* --- range of :math:`J^{1/\\mu}` used in fitting procedure
+			* *fit_interval* --- used fitting interval; either as given or inferred by this procedure, with units
+			* *alpha*, *beta*, *gamma* --- polynomial coefficients of approximation of negative logarithmic derivative of luminescence intensity :math:`r_L(y) \\approx \\alpha + \\beta y + \\gamma y^2`
+			* *mu* --- *mu* used in fitting procedure
+		"""
+
+		un=self.un;
+
+		Return = collections.namedtuple("Return", [
+			"alpha1", "beta1", "gamma1",
+			"alpha2", "beta2", "gamma2",
+			"PJ0", "PJ1", "PJ2", "PJ3",
+			"f_RLfit", "f_RLfit1", "f_RLfit2",
+			"resi",
+			]);
+		J_units = J.units;
+		RL_units = RL.units;
+		
+		# Unit strip
+		J = J.magnitude;
+		RL=RL.magnitude;
+
+		#penalty=0.01;
+
+
+		RL_max = max(RL);
+
+		RLf = scipy.interpolate.interp1d(J, RL, fill_value="extrapolate");
+
+		PJ0 = min(J);
+		#PJ1 = PJ1.magnitude;
+		#PJ2 = PJ2.magnitude;
+
+		PJ3 = max(J);
+
+		assert(RL.shape == J.shape);
+		assert PJ0 >= 0;
+		assert PJ3 >= 0;
+		assert PJ0 < PJ3;
+		assert RL_max > 0;
+
+		assert increase_rel >= 0.;
+
+		if(PJ2 is None):
+			assert PJ1 is None, "If PJ2 point is not given, PJ1 also cannot be given"
+		else:
+			PJ2 = PJ2.magnitude;
+			assert PJ0 < PJ2 <= PJ3;
+			if(PJ1 is not None):
+				PJ1	= PJ1.magnitude;
+				assert	PJ0 <= PJ1 <= PJ2 <= PJ3;
+
+
+		if(expfit): # zmienne alfa_i, beta_i, gamma_i
+			fitvar_to = lambda variables: numpy.exp(variables)
+			fitvar_from = lambda variables: numpy.log(variables)
+			fitvar_init = [-1, -1, -1, -1, -1, -1]
+		else:
+			fitvar_to = lambda variables: variables
+			fitvar_from = lambda variables: variables
+			fitvar_init = [1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1 ]
+
+
+		 #print(PJ0, PJ1, PJ2)
+
+		def residual(variables, PJ1, PJ2):
+			(alpha1,beta1,gamma1,alpha2,beta2,gamma2) = fitvar_to(variables);
+
+			# Kary - dodatki do residuum
+			incompat_pen = 0; # Kary za bezsensowne warunki, dodawana do każdej współrzędnej
+			#print(f"PJ1:{PJ1}, PJ2:{PJ2}");
+
+			if(PJ2 < PJ0):
+				incompat_pen += 10*RL_max*((PJ0 - PJ2)/PJ3)**2;
+				PJ2 = PJ0;
+			if(PJ2 > PJ3):
+				incompat_pen += 10*RL_max*((PJ2 - PJ3)/PJ3)**2;
+				PJ2 = PJ3;
+
+			if(PJ1 < PJ0):
+				incompat_pen += 10*RL_max*((PJ0 - PJ1)/PJ3)**2;
+				PJ1 = PJ0;
+			if(PJ1 > PJ2):
+				incompat_pen += 10*RL_max*((PJ1 - PJ2)/PJ3)**2;
+				PJ1 = PJ2;
+
+			J1 = numpy.linspace(PJ0, PJ1, 30);
+			J2 = numpy.linspace(PJ1, PJ2, 30);
+
+			# dlugosc traktujemy jako wagę, jako że punktów jest po tyle samo,
+			# to żeby malutki przedział nie wnosił więcej, niż duży;
+			# abs pomoże, żeby nie robił się PJ1 poza przedziałem [PJ0, PJ2]
+			dlugosc1 = PJ1 - PJ0;
+			dlugosc2 = PJ2 - PJ1;
+
+			# Jeśli długość jest zero, to nie ma residuum; ale wypełniamy zerami, żeby wymiary się nie zmieniały
+			if(dlugosc1 > 0):
+				fit1 = alpha1 + beta1*J1 + gamma1 * J1**2	     
+				resi1 = (fit1 - RLf(J1)) * dlugosc1;	     
+			else:
+				resi1 = numpy.zeros(J1.shape);
+			
+			if(dlugosc2 > 0):
+				fit2 = alpha2 + beta2*numpy.sqrt(J2) + gamma2 * J2
+				resi2 = (fit2 - RLf(J2)) * dlugosc2;
+			else:
+				resi2 = numpy.zeros(J2.shape);
+				
+			if((dlugosc1>0) and (dlugosc2 > 0)):
+				resi1_2 = [numpy.exp(continuous/8)*(fit2[0] - fit1[-1])];
+			else:
+				resi1_2 = [0.];
+				
+			resi = numpy.array(resi1.tolist() + resi1_2 + resi2.tolist()) + incompat_pen;
+
+			return resi;
+
+		 def residual_fit(PJ1, PJ2):
+
+			return scipy.optimize.least_squares(residual, fitvar_init,
+				kwargs={"PJ1":PJ1, "PJ2":PJ2},
+				)
+
+		def residual2(variables, PJ2):
+
+			PJ1 = variables[0];
+
+			print(f"PJ1:{PJ1}");
+
+			out = residual_fit(PJ1, PJ2);
+			#print(out)
+
+			resi = out.fun;
+			#print(out.fun)
+
+			return numpy.linalg.norm(resi);
+
+		def PJ1_fit(PJ2):
+
+			# Najpierw z grubsza patrzymy na siatce
+			out2 = scipy.optimize.brute(residual2, ranges = ((PJ0, PJ2),), Ns=15, args=(PJ2,), finish=None);
+
+			PJ1 = out2;
+		 
+			#print(residual2([PJ1], PJ2))
+		 
+			# Potem minimalizujemy dokładnie w najbardziej rokującym miejscu
+			out3 = scipy.optimize.minimize(residual2, PJ1, method='CG', args=(PJ2,));
+
+			
+			return out3;
+
+		def residual3(variables):
+
+			PJ1 = variables[0];
+			PJ2 = variables[1];
+
+			#print(f"PJ1:{PJ1} PJ2:{PJ2}");
+
+			out3 = residual_fit(PJ1, PJ2);
+
+			resi = out3.fun + 0.005*numpy.exp(pull/8)*RL_max*((PJ3 - PJ2)/PJ3)**2;
+
+			return numpy.linalg.norm(resi);	 
+
+		def PJ2_fit():
+
+			#print("Global");
+			# Najpierw z grubsza patrzymy na siatce
+			out4 = scipy.optimize.brute(residual3, ranges = ((PJ0, PJ3),(PJ0, PJ3),), Ns=7, finish=None);
+
+			PJ1 = out4[0];
+			PJ2 = out4[1];
+
+			#print("CG");
+			# Potem minimalizujemy dokładnie w najbardziej rokującym miejscu
+			out5 = scipy.optimize.minimize(residual3, [PJ1, PJ2], method='CG');
+
+			return out5;
+
+		if(PJ2 is None):
+			[PJ1, PJ2] = PJ2_fit().x;
+		else:
+			if(PJ1 is None):
+				PJ1 = PJ1_fit(PJ2).x[0];
+
+		out = residual_fit(PJ1, PJ2);
+
+		###
+
+		resi0 = numpy.linalg.norm(out.fun)
+		#print(f"Residuum:\n{resi0:.3e}")
+
+		v0 = fitvar_to(out.x);
+		v1 = v0.copy();
+
+		Nv = len(v0);
+
+		resi_grow_max = increase_rel/Nv * resi0;
+
+		if(resi_grow_max > 0.):
+
+			for i in range(Nv):
+				resi1 = numpy.linalg.norm(residual(fitvar_from(v1),PJ1, PJ2))
+				#print("i=", i, "resi1 =", resi1);
+				mulcoef = 1;
+				for _ in range(100): # limit na ilość iteracji
+					v2 = v1.copy();
+					v2[i] *= (1+mulcoef);
+					resi2 = numpy.linalg.norm(residual(fitvar_from(v2),PJ1, PJ2))
+					#print(resi2)
+					if(resi2 < resi1 + resi_grow_max ):
+						v1 = v2.copy();
+						#print("A");
+					 elif(mulcoef > 1e-1):
+						#print("B");
+						mulcoef /= 2;
+					 else:
+						#print("C");
+						v2 = v1;
+						break;
+			resi1 = numpy.linalg.norm(residual(fitvar_from(v1),PJ1, PJ2))
+			
+			#print("resi0 = ", resi0)
+			print(f"Residuum after maximalization of parameters: \n{resi1:.3e} (relative difference: {100*(resi1-resi0)/resi0:.1f}%)")	
+
+		else:
+			resi1 = resi0;
+
+
+		(alpha1,beta1,gamma1,alpha2,beta2,gamma2) = v1;
+
+	 
+		###
+
+		#(alpha1,beta1,gamma1,alpha2,beta2,gamma2) = fitvar_to(out.x);
+
+		#plt.plot(J, RL )
+
+		#J1 = numpy.linspace(PJ0, PJ1, 50);
+		#J2 = numpy.linspace(PJ1, PJ2, 50);
+
+		print(f"Result: PJ1:{PJ1}, PJ2:{PJ2}");
+
+		#plt.plot(J2, (alpha2 + beta2*numpy.sqrt(J2) + gamma2 * J2))
+		#plt.plot(J1, (alpha1 + beta1*J1 + gamma1 * J1**2))
+
+		fit1 = lambda J1: alpha1 + beta1*J1 + gamma1 * J1**2;
+		fit2 = lambda J2: alpha2 + beta2*numpy.sqrt(J2) + gamma2 * J2;
+
+
+		f_RLfit_nounits = lambda J: numpy.zeros(J.shape) + fit1(J) * (PJ0 <= J) * (J <= PJ1) + fit2(J) * (PJ1 < J) * (J <= PJ2);
+
+		f_RLfit = lambda J: f_RLfit_nounits(J.to(J_units).magnitude) * RL_units;
+
+		#print(out.x)
+
+		return Return(
+			alpha1 = alpha1 * RL_units, beta1=beta1 * RL_units, gamma1=gamma1 * RL_units,
+			alpha2 = alpha2 * RL_units, beta2=beta2 * RL_units, gamma2=gamma2 * RL_units,
+			PJ0 = PJ0, PJ1 = PJ1, PJ2 = PJ2, PJ3 = PJ3,
+			f_RLfit = f_RLfit,
+			f_RLfit1 = lambda J: fit1(J.to(J_units).magnitude) * RL_units,
+			f_RLfit2 = lambda J: fit2(J.to(J_units).magnitude) * RL_units,
+			resi = resi1,
+		)
+
 	def RL_fit_poly(self, ts, Js, RLs, mu, fit_interval=None, wfun=None):
 		"""
 			Polynomial approximation of negative logarithmic derivative of luminescence intensity.
@@ -754,9 +1062,9 @@ class EstimateABC(object):
 			* *mu* --- *mu* used in fitting procedure
 		"""
 
+
 		Return = collections.namedtuple("Return", ["ys", "yf", "fit_interval", "alpha", "beta", "gamma", "mu"])
 
-		un=self.un;
 
 		ys = Js**(1/mu);
 
