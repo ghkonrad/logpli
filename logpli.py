@@ -199,7 +199,7 @@ class EstimateABC(object):
 	def J_fit(self, te, Je, t0, t1, PJ1,
 		alpha1 = None, gamma1 = None,
 		alpha2 = None, beta2 = None, gamma2 = None,
-		minimize_method = "CG", **minimize_options_kwargs):
+		):
 		r"""
 			This function improves optical output *Jfit* based on assumptions that the (negative)logarithmic derivative of *J* is given by, depending on the radiative recombination mechanism:
 
@@ -218,8 +218,6 @@ class EstimateABC(object):
 			* *t0*, *t1* --- lower and upper boundary of the fitting interval
 			* *PJ1* --- division point between mono- and bi-molecular approximations
 			* *alpha1*, *gamma1*, *alpha2*, *beta2*, *gamma2* --- initial values for corresponding parameters (if *None*, then pick a default value),
-			* *minimize_method* --- minimalization method accepted by :func:`scipy.optimize.minimize`
-			* *minimize_options_kwards* --- anything else will be passed as named arguments to :func:`scipy.optimize.fmin_cg`
 
 			Result: a named tuple
 
@@ -233,6 +231,8 @@ class EstimateABC(object):
 
 		# * *tstart* --- the result shall be pinned to the experimental value at this point (the point is arbitrary within the *te* range, i.e. it does not have to correspond to the actual value in *te*, but it must be within range covered by *te*)
 		#assert min(te) <= tstart <= max(te), "Starting value *tstart* must be within range of experimamental values *te* "
+		# * *minimize_method* --- minimalization method accepted by :func:`scipy.optimize.minimize`
+		# * *minimize_options_kwards* --- anything else will be passed as named arguments to :func:`scipy.optimize.fmin_cg`
 
 		Return = collections.namedtuple("Return", ["alpha1", "beta1", "gamma1", "alpha2", "beta2", "gamma2", "tstart", "Jstart", "PJ1", "init_val", "final_val", "tf", "Jf"])
 
@@ -260,7 +260,7 @@ class EstimateABC(object):
 		fitvar_from = lambda alpha1, gamma1, alpha2, beta2, gamma2, Jstart: \
 			numpy.log([x.to(time_unit**-1).magnitude for x in [alpha1, gamma1, alpha2, beta2, gamma2]] + [Jstart.to(un.dimensionless).magnitude]);
 
-		rngf = (t0 <= te) * (te <= t1) * (Je.magnitude != 0); # wywalam też zera w prądzie, bo przez nie tylko trudniej liczyć (czasem się zdarzają przez błędy pomiaru)
+		rngf = (t0 <= te) * (te <= t1) * (Je.magnitude > 0); # wywalam też zera/ujemne w prądzie, bo przez nie tylko trudniej liczyć (czasem się zdarzają przez błędy pomiaru)
 
 		#Jstart = self.J_init_cond(tstart=tstart, t=te, J=Je).Jstart;
 
@@ -273,24 +273,6 @@ class EstimateABC(object):
 		tstart = tf[0];
 		Jstart = Jf[0];
 
-		def func(x):
-
-			(alpha1, gamma1, alpha2, beta2, gamma2, Jstart) = fitvar_to(x);
-
-			#print(alpha1, gamma1, alpha2, beta2, gamma2)
-
-			Jfit = self.J_from_coefs(
-				tf=tf, 
-				tstart=tstart,
-				Jstart=Jstart,
-				alpha1 = alpha1, beta1 = beta1, gamma1 = gamma1,
-				alpha2 = alpha2, beta2 = beta2, gamma2 = gamma2,
-				PJ1 = PJ1
-				);
-			w = ( numpy.log(Jfit) - min(numpy.log(Jfit)) + 1);
-			return numpy.linalg.norm(( w * (Jf - Jfit) / Jfit).to(un.dimensionless).magnitude);
-
-
 
 		x0 = fitvar_from(
 			alpha1 = alpha1,
@@ -302,16 +284,94 @@ class EstimateABC(object):
 			);
 		
 
+		PJ0 = min(Jf);
+		PJ2 = max(Jf);
 
-		init_val = func(x0);
+		def func1(x, PJ1):
+
+			(alpha1, gamma1, alpha2, beta2, gamma2, Jstart) = fitvar_to(x);
+
+			rlfits = self.RL_from_coefs(
+				alpha1 = alpha1, beta1 = beta1, gamma1 = gamma1,
+				alpha2 = alpha2, beta2 = beta2, gamma2 = gamma2,
+				PJ1 = PJ1);
+			print("1", PJ1);
+			#print(alpha1, gamma1, alpha2, beta2, gamma2)
+			incompat_pen = 0;
+			if(PJ1 < PJ0):
+				incompat_pen += (10*((PJ0 - PJ1)/PJ2)**2).to(un.dimensionless).magnitude;
+				PJ1 = PJ0;
+			if(PJ1 > PJ2):
+				incompat_pen += (10*((PJ1 - PJ2)/PJ2)**2).to(un.dimensionless).magnitude;
+				PJ1 = PJ2;
+
+			print("2");
+			Jfit = self.J_from_coefs(
+				tf=tf, 
+				tstart=tstart,
+				Jstart=Jstart,
+				alpha1 = alpha1, beta1 = beta1, gamma1 = gamma1,
+				alpha2 = alpha2, beta2 = beta2, gamma2 = gamma2,
+				PJ1 = PJ1
+				);
+			#return numpy.linalg.norm(( (Jf - Jfit) / Jfit).to(un.dimensionless).magnitude);
+			print("3");
+			return numpy.linalg.norm(numpy.log10(((Jfit+1e-300*un.dimensionless) / Jf).to(un.dimensionless).magnitude)*(Jfit>=0)) + \
+				numpy.linalg.norm((Jfit).to(un.dimensionless).magnitude*(Jfit<0)) + \
+				abs((rlfits.f_RLfit2(PJ1) - rlfits.f_RLfit1(PJ1)).to(1/un.picosecond).magnitude) + \
+				incompat_pen;
+				# różnica w logarytmach, a nie w samych funkcjach, przy czym upewniam się, że nie wyjdzie 0; plus kara za ujemne wartości funkcji, gdyby coś takiego nastąpiło
+
+		def fit1(PJ1):
+
+			res = scipy.optimize.minimize(func1, x0, args=(PJ1,), method = "CG")
+
+			return res;
+
+		def func2(variables):
+
+			PJ1 = variables[0]*un.dimensionless;
+
+			print(f"PJ1:{PJ1}");
+
+			out = fit1(PJ1);
+			#print(out)
+
+			resi = out.fun;
+			print("resi", out.fun)
+
+			return numpy.linalg.norm(resi);
+
+		def fit2():
+
+			# Najpierw z grubsza patrzymy na siatce
+			out2 = scipy.optimize.brute(func2, ranges = ((PJ0, PJ2),), Ns=15, finish=None);
+
+			PJ1 = out2;
+		 
+			#print(residual2([PJ1], PJ2))
+		 
+			# Potem minimalizujemy dokładnie w najbardziej rokującym miejscu
+			out3 = scipy.optimize.minimize(func2, PJ1, method='CG');
+
+			
+			return out3;
+
+		if(PJ1 is None):
+			out3 = fit2();
+			PJ1 = out3.x[0]*un.dimensionless;
+			print(f"PJ1:{PJ1}");
+
+		init_val = func1(x0, PJ1);
 
 		#print(init_val);
 
-		res = scipy.optimize.minimize(func, x0, method = minimize_method, options=minimize_options_kwargs)
+		#res = scipy.optimize.minimize(func1, x0, args=(PJ1,), method = "CG")
+		out = fit1(PJ1);
 
-		(alpha1, gamma1, alpha2, beta2, gamma2, Jstart) = fitvar_to(res.x);
+		(alpha1, gamma1, alpha2, beta2, gamma2, Jstart) = fitvar_to(out.x);
 
-		final_val = func(res.x);
+		final_val = func1(out.x, PJ1);
 		#print(final_val);
 
 		Jfit = self.J_from_coefs(
@@ -763,7 +823,6 @@ class EstimateABC(object):
 
 		return (tl,)+tuple(self._limit_args(t, Jarg, tmin, tmax)[1] for Jarg in Jargs);
 
-# To jest do przeniesienia do biblioteki logpli po przetestowaniu
 	def RL_fit(self, Js, RLs, pull=0, continuous=0, increase_rel=0.0, PJ1=None, PJ2=None):
 		"""
 			Piecewise-polynomial approximation of negative logarithmic derivative of luminescence intensity, accounting for mono-molecular and bi-molecular radiative recombination.
@@ -813,9 +872,11 @@ class EstimateABC(object):
 
 			Return:
 
-			* *alpha1*, *beta1*, *gamma1* --- polynomial coefficients of approximation of negative logarithmic derivative of luminescence intensity for mono-molecular radiative recombination: :math:`r_L(y) \\approx \\alpha_2 + \\beta J + \\gamma J^2`
-			* *alpha2*, *beta2*, *gamma2* --- polynomial coefficients of approximation of negative logarithmic derivative of luminescence intensity for bi-molecular radiative recombination: :math:`r_L(y) \\approx \\alpha_1 + \\beta_1 \\sqrt{J} + \\gamma_1 J`
+			* *alpha1*, *beta1*, *gamma1* --- polynomial coefficients of approximation of negative logarithmic derivative of luminescence intensity for mono-molecular radiative recombination: :math:`r_L(J) \\approx \\alpha_2 + \\beta J + \\gamma J^2`
+			* *alpha2*, *beta2*, *gamma2* --- polynomial coefficients of approximation of negative logarithmic derivative of luminescence intensity for bi-molecular radiative recombination: :math:`r_L(J) \\approx \\alpha_1 + \\beta_1 \\sqrt{J} + \\gamma_1 J`
 			* *PJ0*, *PJ1*, *PJ2*, *PJ3*  --- fitting interval boundaries *JP0*, *JP3*; mono- / bi-molecular fit boundary *PJ1*; end of ftiitng interval *PJ2*; mono-molecular approximation is on (*PJ0*, *PJ1*) and bi-molecular approximation is on (*PJ1*, *PJ2*) 
+			* *f_RLfit* --- obtained fit of negative logarithmic derivative of luminescence intensity
+			* *f_RLfit1*, *f_RLfit2* --- partial fits for mono- and bi-molecular approximations of negative logarithmic derivative of luminescence intensity (with no domain restrictions)
 		"""
 
 		un=self.un;
@@ -1056,26 +1117,45 @@ class EstimateABC(object):
 		#plt.plot(J2, (alpha2 + beta2*numpy.sqrt(J2) + gamma2 * J2))
 		#plt.plot(J1, (alpha1 + beta1*J1 + gamma1 * J1**2))
 
-		fit1 = lambda J1: alpha1 + beta1*J1 + gamma1 * J1**2;
-		fit2 = lambda J2: alpha2 + beta2*numpy.sqrt(J2) + gamma2 * J2;
+		#fit1 = lambda J1: alpha1 + beta1*J1 + gamma1 * J1**2;
+		#fit2 = lambda J2: alpha2 + beta2*numpy.sqrt(J2) + gamma2 * J2;
 
 
-		f_RLfit_nounits = lambda J: numpy.zeros(J.shape) + fit1(J) * (PJ0 <= J) * (J <= PJ1) + fit2(J) * (PJ1 < J) * (J <= PJ2);
+		#f_RLfit_nounits = lambda J: numpy.zeros(J.shape) + fit1(J) * (PJ0 <= J) * (J <= PJ1) + fit2(J) * (PJ1 < J) * (J <= PJ2);
 
-		f_RLfit = lambda J: f_RLfit_nounits(J.to(J_units).magnitude) * RL_units;
+		#f_RLfit = lambda J: f_RLfit_nounits(J.to(J_units).magnitude) * RL_units;
+
+		# attaching units
+		alpha1 = alpha1 * RL_units;
+		beta1=beta1 * RL_units;
+		gamma1=gamma1 * RL_units;
+		alpha2 = alpha2 * RL_units;
+		beta2=beta2 * RL_units;
+		gamma2=gamma2 * RL_units;
+		PJ0 = PJ0*un.dimensionless;
+		PJ1 = PJ1*un.dimensionless;
+		PJ2 = PJ2*un.dimensionless;
+		PJ3 = PJ3*un.dimensionless;
+
+		# create functions
+		rlfits = self.RL_from_coefs(
+			alpha1 = alpha1, beta1=beta1, gamma1=gamma1,
+			alpha2 = alpha2, beta2=beta2, gamma2=gamma2,
+			PJ1 = PJ1,
+			);
 
 		#print(out.x)
 
 		return Return(
-			alpha1 = alpha1 * RL_units, beta1=beta1 * RL_units, gamma1=gamma1 * RL_units,
-			alpha2 = alpha2 * RL_units, beta2=beta2 * RL_units, gamma2=gamma2 * RL_units,
-			PJ0 = PJ0*un.dimensionless,
-			PJ1 = PJ1*un.dimensionless,
-			PJ2 = PJ2*un.dimensionless,
-			PJ3 = PJ3*un.dimensionless,
-			f_RLfit = f_RLfit,
-			f_RLfit1 = lambda J: fit1(J.to(J_units).magnitude) * RL_units,
-			f_RLfit2 = lambda J: fit2(J.to(J_units).magnitude) * RL_units,
+			alpha1 = alpha1, beta1=beta1, gamma1=gamma1,
+			alpha2 = alpha2, beta2=beta2, gamma2=gamma2,
+			PJ0 = PJ0,
+			PJ1 = PJ1,
+			PJ2 = PJ2,
+			PJ3 = PJ3,
+			f_RLfit = rlfits.f_RLfit,
+			f_RLfit1 = rlfits.f_RLfit1,
+			f_RLfit2 = rlfits.f_RLfit2,
 			resi = resi1,
 		)
 
@@ -1150,30 +1230,39 @@ class EstimateABC(object):
 
 		return RL;
 
-	def RL_from_coefs(self, J, alpha, beta, gamma, mu):
+	def RL_from_coefs(self, alpha1, beta1, gamma1, alpha2, beta2, gamma2, PJ1):
 		"""
-			This function calculates the polynomial approximation of :math:`r_L (J^{1/\\mu})` as :math:`r_L(y) \\approx \\alpha + \\beta y + \\gamma y^2` for :math:`y:=J^{1/\\mu}`.
+			This function calculates the polynomial approximation of a negative logarithmic derivative of luminescence intensity *RL* by two functions:
+
+			* mono-molecular radiative recombination: :math:`r_L(J) \\approx \\alpha_1 + \\beta_1 J + \\gamma_1 J^2`
+			* bi-molecular radiative recombination: :math:`r_L(J) \\approx \\alpha_2 + \\beta_2 \\sqrt{J} + \\gamma_2 J
+
 
 			Parameters:
 
-			* *J* --- a vector of luminescence intensity (any value range, may be unrelated to experimental/smoothed/fitted values)
-			* *alpha*, *beta*, *gamma* --- polynomial coefficients
-			* *mu* --- parameter in argument :math:`y:=J^{1/\\mu}`
+			* *alpha1*, *beta1*, *gamma1* --- polynomial coefficients of approximation of negative logarithmic derivative of luminescence intensity for mono-molecular radiative recombination: :math:`r_L(y) \\approx \\alpha_2 + \\beta J + \\gamma J^2`
+			* *alpha2*, *beta2*, *gamma2* --- polynomial coefficients of approximation of negative logarithmic derivative of luminescence intensity for bi-molecular radiative recombination: :math:`r_L(y) \\approx \\alpha_1 + \\beta_1 \\sqrt{J} + \\gamma_1 J`
+			* *PJ1* --- division point between mono- and bi-molecular approximations
 
 			Return: a named tuple
 
-			* *y* --- a vector of values :math:`y:=J^{1/\\mu}`
-			* *RL* --- a vector of corresponding values :math:`r_L(y)`
+			* *f_RLfit* --- obtained fit of negative logarithmic derivative of luminescence intensity
+			* *f_RLfit1*, *f_RLfit2* --- partial fits for mono- and bi-molecular approximations of negative logarithmic derivative of luminescence intensity (with no domain restrictions)
 		"""
-		Return = collections.namedtuple("Return", ["y", "RL"])
+		Return = collections.namedtuple("Return", ["f_RLfit", "f_RLfit1", "f_RLfit2"]);
 
-		y = (J.to(self.un.dimensionless).magnitude) ** (1/mu) * self.un.dimensionless;
+		RL_units = alpha1.units;
 
-		RL = polyval([gamma, beta, alpha], y); # ta funkcja uwzględnia jednostki
+		fit1 = lambda J1: alpha1 + beta1*J1 + gamma1 * J1**2;
+		fit2 = lambda J2: alpha2 + beta2*numpy.sqrt(J2) + gamma2 * J2;
+
+
+		f_RLfit = lambda J: numpy.zeros(J.shape)*RL_units + fit1(J) * (J <= PJ1) + fit2(J) * (PJ1 < J);
 
 		return Return(
-			y = y,
-			RL= RL,
+			f_RLfit = f_RLfit,
+			f_RLfit1 = fit1,
+			f_RLfit2 = fit2,
 			);
 
 	@cached_property
