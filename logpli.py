@@ -196,7 +196,8 @@ class EstimateABC(object):
 			C = (gamma/(mu * n0**2)).to(un.cm**6/un.s),
 			);
 
-	def J_fit(self, te, Je, t0, t1, PJ1,
+	def J_fit(self, te, Je, t0, t1,
+		PJ1 = None,
 		alpha1 = None, gamma1 = None,
 		alpha2 = None, beta2 = None, gamma2 = None,
 		):
@@ -216,7 +217,7 @@ class EstimateABC(object):
 			
 			* *te*, *Je* --- experimental values to be fitted to
 			* *t0*, *t1* --- lower and upper boundary of the fitting interval
-			* *PJ1* --- division point between mono- and bi-molecular approximations
+			* *PJ1* --- division point between mono- and bi-molecular approximations, if *None* then it will be fitted (this is the default)
 			* *alpha1*, *gamma1*, *alpha2*, *beta2*, *gamma2* --- initial values for corresponding parameters (if *None*, then pick a default value),
 
 			Result: a named tuple
@@ -295,17 +296,17 @@ class EstimateABC(object):
 				alpha1 = alpha1, beta1 = beta1, gamma1 = gamma1,
 				alpha2 = alpha2, beta2 = beta2, gamma2 = gamma2,
 				PJ1 = PJ1);
-			print("1", PJ1);
+			#print("1", PJ1);
 			#print(alpha1, gamma1, alpha2, beta2, gamma2)
-			incompat_pen = 0;
+			incompat_pen = 0*un.dimensionless;
 			if(PJ1 < PJ0):
-				incompat_pen += (10*((PJ0 - PJ1)/PJ2)**2).to(un.dimensionless).magnitude;
+				incompat_pen += (10*((PJ0 - PJ1)/PJ2)**2);
 				PJ1 = PJ0;
 			if(PJ1 > PJ2):
-				incompat_pen += (10*((PJ1 - PJ2)/PJ2)**2).to(un.dimensionless).magnitude;
+				incompat_pen += (10*((PJ1 - PJ2)/PJ2)**2);
 				PJ1 = PJ2;
+			incompat_pen = incompat_pen.to(un.dimensionless).magnitude;
 
-			print("2");
 			Jfit = self.J_from_coefs(
 				tf=tf, 
 				tstart=tstart,
@@ -314,13 +315,18 @@ class EstimateABC(object):
 				alpha2 = alpha2, beta2 = beta2, gamma2 = gamma2,
 				PJ1 = PJ1
 				);
+
+			infit_pen = numpy.linalg.norm(numpy.log10(((Jfit+1e-300*un.dimensionless) / Jf).to(un.dimensionless).magnitude)*(Jfit>=0));
+			# różnica w logarytmach, a nie w samych funkcjach, przy czym upewniam się, że nie wyjdzie 0; plus kara za ujemne wartości funkcji, gdyby coś takiego nastąpiło
+
+			negative_pen = numpy.linalg.norm((Jfit).to(un.dimensionless).magnitude*(Jfit<0));
+
+			discontinuity_pen = abs((rlfits.f_RLfit2(PJ1) - rlfits.f_RLfit1(PJ1)).to(1/un.picosecond).magnitude);
+
+			#print("2");
 			#return numpy.linalg.norm(( (Jf - Jfit) / Jfit).to(un.dimensionless).magnitude);
-			print("3");
-			return numpy.linalg.norm(numpy.log10(((Jfit+1e-300*un.dimensionless) / Jf).to(un.dimensionless).magnitude)*(Jfit>=0)) + \
-				numpy.linalg.norm((Jfit).to(un.dimensionless).magnitude*(Jfit<0)) + \
-				abs((rlfits.f_RLfit2(PJ1) - rlfits.f_RLfit1(PJ1)).to(1/un.picosecond).magnitude) + \
-				incompat_pen;
-				# różnica w logarytmach, a nie w samych funkcjach, przy czym upewniam się, że nie wyjdzie 0; plus kara za ujemne wartości funkcji, gdyby coś takiego nastąpiło
+			#print("3");
+			return infit_pen + incompat_pen + negative_pen + discontinuity_pen;
 
 		def fit1(PJ1):
 
@@ -332,20 +338,23 @@ class EstimateABC(object):
 
 			PJ1 = variables[0]*un.dimensionless;
 
-			print(f"PJ1:{PJ1}");
+			#print(f"PJ1:{PJ1}");
 
 			out = fit1(PJ1);
 			#print(out)
 
 			resi = out.fun;
-			print("resi", out.fun)
+			#print("resi", out.fun)
 
 			return numpy.linalg.norm(resi);
 
 		def fit2():
 
 			# Najpierw z grubsza patrzymy na siatce
-			out2 = scipy.optimize.brute(func2, ranges = ((PJ0, PJ2),), Ns=15, finish=None);
+			out2 = scipy.optimize.brute(func2, ranges = ((
+				PJ0.to(un.dimensionless).magnitude,
+				PJ2.to(un.dimensionless).magnitude),),
+				Ns=7, finish=None);
 
 			PJ1 = out2;
 		 
@@ -360,7 +369,7 @@ class EstimateABC(object):
 		if(PJ1 is None):
 			out3 = fit2();
 			PJ1 = out3.x[0]*un.dimensionless;
-			print(f"PJ1:{PJ1}");
+			#print(f"PJ1:{PJ1}");
 
 		init_val = func1(x0, PJ1);
 
@@ -1510,6 +1519,7 @@ class PrintInfo(object):
 
 		display(Latex(f"Initial residuum: = {res.init_val:.3e}"));
 		display(Latex(f"Final residuum: = {res.final_val:.3e}"));
+		display(Latex(f"PJ1: = {res.PJ1:~.3e}"));
 
 	def mu(self, mu):
 		"""
