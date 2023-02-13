@@ -1324,11 +1324,11 @@ class Plotter(object):
 	"""
 	def __init__(self, un=un_default):
 		self.style_data = {'color':'#1F20E0', 'label':'orig.'};
-		self.style_smoothed = {'color':'#E07E1F', 'label':'smooth.'};
+		self.style_smoothed = {'color':'#FA7E4B', 'label':'smooth.'};
 		self.style_fit = {'color':'#1FE07E', 'label':'fit'};
 		self.style_fit_outside_interval = {'color':'#1FE07E', "ls":"--"}; # approximation outside of fitting interval
-		self.style_fit1 = {'color':'#225BAC', 'label':'fit 1', 'lw':3};
-		self.style_fit2 = {'color':'#1B4815', 'label':'fit 2', 'lw':3};
+		self.style_fit1 = {'color':'#225BAC', 'label':'fit 1', 'lw':4};
+		self.style_fit2 = {'color':'#A71F20', 'label':'fit 2', 'lw':4};
 
 		self.un=un;
 
@@ -1379,7 +1379,7 @@ class Plotter(object):
 		plt.legend();
 		#plt.show();
 
-	def _RL_extras(self, y, RL, mu):
+	def _RL_extras(self, y, RL, mu, twinx=True):
 		"""
 			Labels, units and other details for negative logarithmic derivative of the normalized optical output plots.
 		"""
@@ -1395,7 +1395,7 @@ class Plotter(object):
 		plt.ylabel(f"-d log(J) / dt $\\left[{RL.units:~L}\\right]$");
 		plt.legend(loc="best");
 
-		if(mu is not None) and (mu != 1):
+		if(mu is not None) and (mu != 1) and (twinx):
 			ax = plt.gca();
 			if(len(ax.get_shared_x_axes().get_siblings(ax))==1): # This is to prevent multiple creation of second axis --- it then shows incorrect values
 				ax2 = ax.secondary_xaxis('top', functions=(lambda Jpmu: Jpmu**mu, lambda J: J**(1/mu)))
@@ -1443,19 +1443,20 @@ class Plotter(object):
 			plt.axvline(x = fit_interval[0].magnitude, color=self.style_fit["color"], ls="--", lw=2) # granica fitowania
 			plt.axvline(x = fit_interval[1].magnitude, color=self.style_fit["color"], ls="--", lw=2) # granica fitowania
 
-	def RLsRLf2(self, ys, RLs, yf1, RLf1, yf2, RLf2, mu=None):
+	def RLsRLf2(self, ys, RLs, yf1, RLf1, yf2, RLf2, mu=None, twinx=True):
 		"""
 			Plot fitted negative logarithmic derivative of the normalized optical output *RLs* versus chosen argument *ys*.
 			Generally *ys* should be :math:`J^{1/\\mu}`, so if a correct *mu* is provided, a proper x-axis label will be added. Parameter *mu* is not used otherwise.
+			Also second axis for :math:`J` would be provided if *mu* is not 1, and it *twinx* is *True*.
 
 			Two fits *yf1*, *RLf1* and *yf2*, *RLf2* may be provided, correponding to mono- and bi-molecular recombination regimes. Regardless, *yf1* and *yf2* shall both correspond to :math:`J^{1/\\mu}` for *mu* given as a parameter (not as *mu* parameter used for fitting in this particular fit) .
 
 		"""
-		plt.plot(ys.magnitude , RLs.magnitude, lw=4, **self.style_smoothed);
-		plt.plot(yf1.to(ys.units).magnitude, RLf1.to(RLs.units).magnitude, **self.style_fit1);
-		plt.plot(yf2.to(ys.units).magnitude, RLf2.to(RLs.units).magnitude, **self.style_fit2);
+		plt.plot(ys.magnitude , RLs.magnitude, lw=5, **self.style_smoothed);
+		plt.plot(yf1.to(ys.units).magnitude, RLf1.to(RLs.units).magnitude, ls="--", **self.style_fit1);
+		plt.plot(yf2.to(ys.units).magnitude, RLf2.to(RLs.units).magnitude, ls="--", **self.style_fit2);
 
-		self._RL_extras(ys, RLs, mu);
+		self._RL_extras(ys, RLs, mu, twinx);
 
 
 	def rel_Je_vs_Js(self, te, Je, ts=None, Js=None, tf = None, Jf = None):
@@ -1511,6 +1512,29 @@ class PrintInfo(object):
 		display(Latex(f"$A={A:~Le}$"));
 		display(Latex(f"$B={B:~Le}$"));
 		display(Latex(f"$C={C:~Le}$"));
+
+	def abclatex(self, alpha, beta, gamma, A, B, C):
+		"""
+			Print parameters *A*, *B*, *C*, and *alpha*, *beta*, *gamma* in a Latex syntax.
+		"""
+		un = self.un;
+		alpha_unit = 1 / un.ns;
+		beta_unit  = 1 / un.ns;
+		gamma_unit = 1 / un.ns;
+		A_unit = 1 / un.s;
+		B_unit = un.cm**3 / un.s;
+		C_unit = un.cm**6 / un.s;
+
+		print(", ".join((
+				fr"$\\alpha=\SI{{{alpha.to(alpha_unit).magnitude:.2e}}}{{{alpha_unit:~}}}$".replace("**","^"),
+				fr"$\\beta =\SI{{{beta.to(beta_unit).magnitude:.2e}}}{{{beta_unit:~}}}$".replace("**","^"),
+				fr"$\\gamma=\SI{{{gamma.to(gamma_unit).magnitude:.2e}}}{{{gamma_unit:~}}}$".replace("**","^"),
+				)));
+		print(", ".join((
+				fr"$A=\SI{{{A.to(A_unit).magnitude:.2e}}}{{{A_unit:~}}}$".replace("**","^"),
+				fr"$B=\SI{{{B.to(B_unit).magnitude:.2e}}}{{{B_unit:~}}}$".replace("**","^"),
+				fr"$C=\SI{{{C.to(C_unit).magnitude:.2e}}}{{{C_unit:~}}}$".replace("**","^"),
+				)));
 
 	def J_fit_details(self, res):
 		"""
