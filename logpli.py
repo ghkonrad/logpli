@@ -895,6 +895,7 @@ class EstimateABC(object):
 			"alpha2", "beta2", "gamma2",
 			"PJ0", "PJ1", "PJ2", "PJ3",
 			"f_RLfit", "f_RLfit1", "f_RLfit2",
+			"f_RLfit2A", "f_RLfit2AB",
 			"resi",
 			]);
 		J_units = Js.units;
@@ -1165,6 +1166,8 @@ class EstimateABC(object):
 			f_RLfit = rlfits.f_RLfit,
 			f_RLfit1 = rlfits.f_RLfit1,
 			f_RLfit2 = rlfits.f_RLfit2,
+			f_RLfit2A = rlfits.f_RLfit2A,
+			f_RLfit2AB = rlfits.f_RLfit2AB,
 			resi = resi1,
 		)
 
@@ -1258,12 +1261,18 @@ class EstimateABC(object):
 			* *f_RLfit* --- obtained fit of negative logarithmic derivative of luminescence intensity
 			* *f_RLfit1*, *f_RLfit2* --- partial fits for mono- and bi-molecular approximations of negative logarithmic derivative of luminescence intensity (with no domain restrictions)
 		"""
-		Return = collections.namedtuple("Return", ["f_RLfit", "f_RLfit1", "f_RLfit2"]);
+		Return = collections.namedtuple("Return", [
+			"f_RLfit", "f_RLfit1", "f_RLfit2",
+			"f_RLfit2A", "f_RLfit2AB", 
+			]);
 
 		RL_units = alpha1.units;
 
-		fit1 = lambda J1: alpha1 + beta1*J1 + gamma1 * J1**2;
-		fit2 = lambda J2: alpha2 + beta2*numpy.sqrt(J2) + gamma2 * J2;
+		fit1   = lambda J1: alpha1 + beta1*J1 + gamma1 * J1**2;
+		
+		fit2   = lambda J2: alpha2 + beta2*numpy.sqrt(J2) + gamma2 * J2;
+		fit2A  = lambda J2: alpha2 + 0. * RL_units * numpy.sqrt(J2)    + 0. * RL_units * J2;
+		fit2AB = lambda J2: alpha2 + beta2*numpy.sqrt(J2) + 0. * RL_units * J2;
 
 
 		f_RLfit = lambda J: numpy.zeros(J.shape)*RL_units + fit1(J) * (J <= PJ1) + fit2(J) * (PJ1 < J);
@@ -1272,6 +1281,8 @@ class EstimateABC(object):
 			f_RLfit = f_RLfit,
 			f_RLfit1 = fit1,
 			f_RLfit2 = fit2,
+			f_RLfit2A = fit2A,
+			f_RLfit2AB = fit2AB,
 			);
 
 	@cached_property
@@ -1327,8 +1338,9 @@ class Plotter(object):
 		self.style_smoothed = {'color':'#FA7E4B', 'label':'smooth.'};
 		self.style_fit = {'color':'#1FE07E', 'label':'fit'};
 		self.style_fit_outside_interval = {'color':'#1FE07E', "ls":"--"}; # approximation outside of fitting interval
-		self.style_fit1 = {'color':'#225BAC', 'label':'fit 1', 'lw':4};
-		self.style_fit2 = {'color':'#A71F20', 'label':'fit 2', 'lw':4};
+		self.style_fit1  = {'color':'#225BAC', 'label':'fit 1', 'lw':4};
+		self.style_fit2  = {'color':'#A71F20', 'label':'fit 2', 'lw':4};
+		self.style_fit2E = {'color':'#A71F20', 'lw':2};
 
 		self.un=un;
 
@@ -1457,7 +1469,6 @@ class Plotter(object):
 		plt.plot(yf2.to(ys.units).magnitude, RLf2.to(RLs.units).magnitude, ls="--", **self.style_fit2);
 
 		self._RL_extras(ys, RLs, mu, twinx);
-
 
 	def rel_Je_vs_Js(self, te, Je, ts=None, Js=None, tf = None, Jf = None):
 		"""
