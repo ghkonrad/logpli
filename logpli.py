@@ -498,7 +498,7 @@ class EstimateABC(object):
 			Jstart=Jstart,
 			);
 
-	def J_load_txt(self, filename, tcol, Jcol, tunit, Junit=None, **kwargs):
+	def J_load_txt(self, filename, tcol, Jcol, tunit, Junit=None, normalize=True, **kwargs):
 		"""
 			A helper function for loading experimental time *te* and optical output *Je* from a text file. Optical output will be automatically normalized so that the maximum will be 1.
 
@@ -508,7 +508,8 @@ class EstimateABC(object):
 			* *tcol* --- column number for time
 			* *Jcol* --- column number for normalized optical output
 			* *tunit* --- unit of time (no autodetection)
-			* *Junit* --- unit of normalized optical output (by default it is dimensionless)
+			* *Junit* --- unit of normalized optical output (by default it is dimensionless)a
+			* *normalize* --- normalize *Je* (default: *True*)
 
 			Named parameters of :func:`numpy.loadtxt` are also accepted, for example:
 
@@ -530,7 +531,8 @@ class EstimateABC(object):
 			);
 
 		to *= tunit;
-		Jo /= max(Jo); # normalizacja
+		if(normalize):
+			Jo /= max(Jo); # normalizacja
 		Jo *= Junit
 
 		return Return(
