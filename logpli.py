@@ -640,6 +640,8 @@ class EstimateABC(object):
 			* *tradius* --- time for smoothing radius specification for function :func:`self.J_smooth`
 		"""
 
+		Jradius = numpy.asarray(Jradius);
+
 		assert t.shape == J.shape
 		assert len(Jradius.shape) == 1
 
